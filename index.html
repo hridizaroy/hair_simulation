@@ -36,6 +36,7 @@
 
         // Get logical interface
         const device = await adapter.requestDevice();
+        device.addEventListener('uncapturederror', event => console.log(event.error.message));
 
         // Connect canvas with GPU interface
         const context = canvas.getContext("webgpu");
@@ -54,9 +55,9 @@
         [
             //   X, Y, R, G, B
             0.0, 0.0,
-            0.0, -0.1,
-            0.0, -0.3,
-            0.0, -0.5
+            0.0, -0.2,
+            0.0, -0.4,
+            0.0, -0.6
         ]);
         
         const indices = new Uint16Array([0, 1, 2, 3]);
@@ -91,7 +92,7 @@
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
 
-        // Storage Buffer
+        // Storage Buffers
         const positionsArray = new Float32Array(numHairStrands * strandVertices.length);
         const velocitiesArray = new Float32Array(numHairStrands * strandVertices.length);
 
@@ -108,9 +109,22 @@
                 size: velocitiesArray.byteLength,
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             }),
+            device.createBuffer(
+            {
+                label: "PositionsCopy",
+                size: positionsArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+            device.createBuffer(
+            {
+                label: "VelocitiesCopy",
+                size: velocitiesArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
         ];
 
         device.queue.writeBuffer(hairStateStorage[1], 0, velocitiesArray);
+        device.queue.writeBuffer(hairStateStorage[3], 0, velocitiesArray);
         
         // fill positions
         for (let ii = 0; ii < numHairStrands; ii += 1)
@@ -126,6 +140,7 @@
         }
 
         device.queue.writeBuffer(hairStateStorage[0], 0, positionsArray);
+        device.queue.writeBuffer(hairStateStorage[2], 0, positionsArray);
 
         const vertexBufferLayout =
         {
@@ -182,27 +197,29 @@
             code: 
             `
                 @group(0) @binding(0) var<uniform> numStrandVertices: f32;
-                @group(0) @binding(1) var<storage, read_write> positions: array<f32>;
-                @group(0) @binding(2) var<storage, read_write> velocities: array<f32>;
+                @group(0) @binding(1) var<storage> positionsIn: array<f32>;
+                @group(0) @binding(2) var<storage> velocitiesIn: array<f32>;
+                @group(0) @binding(3) var<storage, read_write> positionsOut: array<f32>;
+                @group(0) @binding(4) var<storage, read_write> velocitiesOut: array<f32>;
 
-                const mass = 20.0f;
-                const gravity : f32 = -10.0f;
-                const deltaTime : f32 = 1.0f/60.0f;
-                const damping = 3.0f;
-                const k = 5.0f;
+                const mass = 0.01f;
+                const gravity : f32 = -9.8f;
+                const deltaTime : f32 = 1.0f/6000.0f;
+                const damping = 0.0f;
+                const k = 2.0f;
 
                 fn calculateForces(idx: u32, last_vertex: bool) -> f32
                 {
-                    let vi = velocities[idx];
+                    let vi = velocitiesIn[idx];
                     
-                    let dist1 = positions[idx] - positions[idx - 2];
-                    let dist2 = positions[idx + 2] - positions[idx];
+                    let dist1 = positionsIn[idx] - positionsIn[idx - 2];         
 
-                    var force = mass * gravity + k * dist1 + damping * vi;
+                    var force = mass * gravity - k * dist1 + damping * vi;
 
                     if (!last_vertex)
                     {
-                        force += (-1.0f * k * dist2 - damping * velocities[idx + 2]);
+                        let dist2 = positionsIn[idx + 2] - positionsIn[idx];
+                        force += (k * dist2 - damping * velocitiesIn[idx + 2]);
                     }
                     
                     return force;
@@ -216,13 +233,13 @@
 
                     let vert_idx = f32(idx % u32(numStrandVertices));
 
-                    if (idx % 2 == 1 && vert_idx > 1.0f)
+                    if (idx % 2 == 1 && vert_idx > 5.0f)
                     {
                         let force: f32 = calculateForces(idx, vert_idx == numStrandVertices - 1.0f);
                         let acceleration: f32 = force / mass;
 
-                        velocities[idx] = velocities[idx] + acceleration * deltaTime;
-                        positions[idx] = positions[idx] + velocities[idx] * deltaTime;
+                        velocitiesOut[idx] = velocitiesIn[idx] + acceleration * deltaTime;
+                        positionsOut[idx] = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
                     }
                 }
             `
@@ -241,10 +258,20 @@
             {
                 binding: 1,
                 visibility: GPUShaderStage.COMPUTE,
-                buffer: { type: "storage"} // Hair positions buffer
+                buffer: { type: "read-only-storage"} // Hair positions buffer
             },
             {
                 binding: 2,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "read-only-storage"} // Hair velocities buffer
+            },
+            {
+                binding: 3,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair positions buffer
+            },
+            {
+                binding: 4,
                 visibility: GPUShaderStage.COMPUTE,
                 buffer: { type: "storage"} // Hair velocities buffer
             }]
@@ -268,13 +295,13 @@
 
         const pipelineLayoutCompute = device.createPipelineLayout(
         {
-            label: "Hair Pipeline Layout",
+            label: "Hair Pipeline Layout Compute",
             bindGroupLayouts: [ bindGroupLayoutCompute ]
         });
 
         const pipelineLayoutVertex = device.createPipelineLayout(
         {
-            label: "Hair Pipeline Layout",
+            label: "Hair Pipeline Layout Vertex",
             bindGroupLayouts: [ bindGroupLayoutVertex ]
         });
 
@@ -296,8 +323,8 @@
                 }]
             },
             primitive: {
-                topology: 'line-strip',
-                stripIndexFormat: 'uint16'
+                topology: 'point-list',
+                //stripIndexFormat: 'uint16'
             }
         });
 
@@ -317,41 +344,97 @@
         device.queue.writeBuffer(indexBuffer, 0, indices);
         device.queue.writeBuffer(uniformBuffer, 0, uniforms);
 
-        const bindGroupCompute = device.createBindGroup(
-        {
-            label: "Simulation bind group",
-            layout: bindGroupLayoutCompute,
-            entries: [
+        const bindGroupsCompute = [
+            device.createBindGroup(
             {
-                binding: 0,
-                resource: { buffer: uniformBuffer }
-            },
+                label: "Simulation bind group A",
+                layout: bindGroupLayoutCompute,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: hairStateStorage[0] }
+                    },
+                    {
+                        binding: 2,
+                        resource: { buffer: hairStateStorage[1] }
+                    },
+                    {
+                        binding: 3,
+                        resource: { buffer: hairStateStorage[2] }
+                    },
+                    {
+                        binding: 4,
+                        resource: { buffer: hairStateStorage[3] }
+                    }
+                ]
+            }),
+            device.createBindGroup(
             {
-                binding: 1,
-                resource: { buffer: hairStateStorage[0] }
-            },
-            {
-                binding: 2,
-                resource: { buffer: hairStateStorage[1] }
-            }
-            ]
-        });
+                label: "Simulation bind group B",
+                layout: bindGroupLayoutCompute,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: hairStateStorage[2] }
+                    },
+                    {
+                        binding: 2,
+                        resource: { buffer: hairStateStorage[3] }
+                    },
+                    {
+                        binding: 3,
+                        resource: { buffer: hairStateStorage[0] }
+                    },
+                    {
+                        binding: 4,
+                        resource: { buffer: hairStateStorage[1] }
+                    }
+                ]
+            })
+        ];
 
-        const bindGroupVertex = device.createBindGroup(
-        {
-            label: "Vertex Bind group",
-            layout: bindGroupLayoutVertex,
-            entries: [
+        const bindGroupsVertex = [
+            device.createBindGroup(
             {
-                binding: 0,
-                resource: { buffer: uniformBuffer }
-            },
+                label: "Vertex Bind group A",
+                layout: bindGroupLayoutVertex,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: hairStateStorage[0] }
+                    }
+                ]
+            }),
+            device.createBindGroup(
             {
-                binding: 1,
-                resource: { buffer: hairStateStorage[0] }
-            }
-            ]
-        });
+                label: "Vertex Bind group B",
+                layout: bindGroupLayoutVertex,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: hairStateStorage[2] }
+                    }
+                ]
+            })
+        ];
+
+        let step = 0;
 
         function simulateHair()
         {
@@ -361,7 +444,7 @@
             const computePass = encoder.beginComputePass();
 
             computePass.setPipeline(simulationPipeline);
-            computePass.setBindGroup(0, bindGroupCompute);
+            computePass.setBindGroup(0, bindGroupsCompute[step]);
 
             const workgroupCount = Math.ceil((numHairStrands * strandVertices.length) / WORKGROUP_SIZE);
             computePass.dispatchWorkgroups(workgroupCount);
@@ -383,13 +466,15 @@
             pass.setIndexBuffer(indexBuffer, "uint16");
             pass.setPipeline(hairPipeline);
             pass.setVertexBuffer(0, vertexBuffer);            
-            pass.setBindGroup(0, bindGroupVertex);
+            pass.setBindGroup(0, bindGroupsVertex[step]);
             pass.drawIndexed(indices.length, numHairStrands);
 
             pass.end();
 
             // Finish command buffer and immediately submit it
             device.queue.submit([encoder.finish()]);
+
+            step = Number(!step);
 
             requestAnimationFrame(simulateHair);
         }
