@@ -55,9 +55,9 @@
         [
             //   X, Y, R, G, B
             0.0, 0.0,
-            0.0, -0.2,
-            0.0, -0.4,
-            0.0, -0.6
+            -0.0, -0.2,
+            -0.0, -0.4,
+            -0.0, -0.6
         ]);
         
         const indices = new Uint16Array([0, 1, 2, 3]);
@@ -202,24 +202,44 @@
                 @group(0) @binding(3) var<storage, read_write> positionsOut: array<f32>;
                 @group(0) @binding(4) var<storage, read_write> velocitiesOut: array<f32>;
 
-                const mass = 0.01f;
-                const gravity : f32 = -9.8f;
-                const deltaTime : f32 = 1.0f/6000.0f;
+                const mass = 0.1f;
+                const gravity : f32 = -19.6f;
+                const deltaTime : f32 = 1.0f/60.0f;
+                // const damping = 1.2f;
                 const damping = 0.0f;
-                const k = 2.0f;
+                const k = 30.0f;
+                const rest_length = 0.2f;
 
-                fn calculateForces(idx: u32, last_vertex: bool) -> f32
+                fn calculateForces(idx: u32, last_vertex: bool) -> vec2<f32>
                 {
-                    let vi = velocitiesIn[idx];
-                    
-                    let dist1 = positionsIn[idx] - positionsIn[idx - 2];         
+                    let vi : vec2<f32> = vec2(velocitiesIn[idx], velocitiesIn[idx]);
 
-                    var force = mass * gravity - k * dist1 + damping * vi;
+                    let curr_pos : vec2<f32> = vec2(positionsIn[idx], positionsIn[idx + 1]);
+                    let prev_pos : vec2<f32> = vec2(positionsIn[idx  - 2], positionsIn[idx - 1]);
+
+                    let length1 : f32 = length(curr_pos - prev_pos);
+                    let dir1 : vec2<f32> = normalize(prev_pos - curr_pos);
+                    
+                    // Spring force towards previous strand
+                    var force : vec2<f32> = dir1 * (length1 - rest_length) * k;
+
+                    force += vi * damping;
+
+                    force.y += mass * gravity;
 
                     if (!last_vertex)
                     {
-                        let dist2 = positionsIn[idx + 2] - positionsIn[idx];
-                        force += (k * dist2 - damping * velocitiesIn[idx + 2]);
+                        let next_pos : vec2<f32> = vec2(positionsIn[idx + 2], positionsIn[idx + 3]);
+
+                        let length2: f32 = length(curr_pos - next_pos);
+                        let dir2 : vec2<f32> = normalize(curr_pos - next_pos);
+                        
+                        // Spring force towards next strand
+                        force += dir2 * (length2 - rest_length) * k;
+
+                        let v_last : vec2<f32> = vec2(velocitiesIn[idx + 2], velocitiesIn[idx + 3]);
+                        
+                        force += -v_last * damping;
                     }
                     
                     return force;
@@ -233,13 +253,16 @@
 
                     let vert_idx = f32(idx % u32(numStrandVertices));
 
-                    if (idx % 2 == 1 && vert_idx > 5.0f)
+                    if ( vert_idx > 1.0f && idx % 2 == 0 )
                     {
-                        let force: f32 = calculateForces(idx, vert_idx == numStrandVertices - 1.0f);
-                        let acceleration: f32 = force / mass;
+                        let force: vec2<f32> = calculateForces(idx, vert_idx >= numStrandVertices - 2.0f);
+                        let acceleration: vec2<f32> = force / mass;
 
-                        velocitiesOut[idx] = velocitiesIn[idx] + acceleration * deltaTime;
+                        velocitiesOut[idx] = acceleration.x * deltaTime;
+                        velocitiesOut[idx + 1] = acceleration.y * deltaTime;
+
                         positionsOut[idx] = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
+                        positionsOut[idx + 1] = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
                     }
                 }
             `
@@ -323,8 +346,8 @@
                 }]
             },
             primitive: {
-                topology: 'point-list',
-                //stripIndexFormat: 'uint16'
+                topology: 'line-strip',
+                stripIndexFormat: 'uint16'
             }
         });
 
