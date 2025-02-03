@@ -1,0 +1,401 @@
+<!doctype html>
+
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Hair Simulator</title>
+</head>
+<body>
+    <canvas id="webgpu-canvas" width="400" height="400"></canvas>
+    <script type="module">
+
+        // ---------------------------- WebGPU Setup --------------------------
+
+        // Constants
+        const WORKGROUP_SIZE = 8;
+        
+        // Get access to our canvas
+        const canvas = document.getElementById("webgpu-canvas");
+
+        // Check if webgpu is supported
+        if (!navigator.gpu)
+        {
+            throw new Error("WebGPU not supported on this browser.");
+        }
+
+        // Get GPU adapter with a preference for high performance/discrete GPUs
+        const adapter = await navigator.gpu.requestAdapter(
+            {
+                powerPreference: "high-performance"
+            });
+
+        if (!adapter)
+        {
+            throw new Error("No GPU Adapter found.");
+        }
+
+        // Get logical interface
+        const device = await adapter.requestDevice();
+
+        // Connect canvas with GPU interface
+        const context = canvas.getContext("webgpu");
+        const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+        context.configure(
+        {
+            device: device,
+            format: canvasFormat // texture format
+        });
+
+        // ------------------------- WebGPU Setup End --------------------------
+
+
+        // Vertex and index data
+        const strandVertices = new Float32Array(
+        [
+            //   X, Y, R, G, B
+            0.0, 0.0,
+            0.0, -0.1,
+            0.0, -0.3,
+            0.0, -0.5
+        ]);
+        
+        const indices = new Uint16Array([0, 1, 2, 3]);
+
+        // Vertex Buffer
+        const vertexBuffer = device.createBuffer(
+        {
+            label: "Strand vertices",
+            size: strandVertices.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+        });
+
+        // Index Buffer
+        const indexBuffer = device.createBuffer(
+        {
+            label: "Strand indices",
+            size: indices.byteLength,
+            usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST
+        });
+
+        const numHairStrands = 100.0;
+        const radius = 0.5;
+        const scalpCenterX = 0.2;
+        const scalpCenterY = 0.4;
+
+        // Uniform Buffer
+        const uniforms = new Float32Array([strandVertices.length]);
+        const uniformBuffer = device.createBuffer(
+        {
+            label: "Hair Uniforms",
+            size: uniforms.byteLength,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+
+        // Storage Buffer
+        const positionsArray = new Float32Array(numHairStrands * strandVertices.length);
+        const velocitiesArray = new Float32Array(numHairStrands * strandVertices.length);
+
+        const hairStateStorage = [
+            device.createBuffer(
+            {
+                label: "Positions",
+                size: positionsArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+            device.createBuffer(
+            {
+                label: "Velocities",
+                size: velocitiesArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+        ];
+
+        device.queue.writeBuffer(hairStateStorage[1], 0, velocitiesArray);
+        
+        // fill positions
+        for (let ii = 0; ii < numHairStrands; ii += 1)
+        {
+            for (let jj = 0; jj < strandVertices.length; jj += 2)
+            {
+                let theta = ii * Math.PI/(numHairStrands - 1.0);
+                let base_idx = ii * strandVertices.length + jj;
+
+                positionsArray[base_idx] = radius * Math.cos(theta) + scalpCenterX + strandVertices[jj];
+                positionsArray[base_idx + 1] = -1.0 * radius * Math.sin(theta) + scalpCenterY + strandVertices[jj + 1];
+            }
+        }
+
+        device.queue.writeBuffer(hairStateStorage[0], 0, positionsArray);
+
+        const vertexBufferLayout =
+        {
+            arrayStride: 8,
+            attributes:
+            [{
+                format: "float32x2",
+                offset: 0,
+                shaderLocation: 0
+            }]
+        };
+
+        const hairShaderModule = device.createShaderModule(
+        {
+            label: "Hair shader",
+            code:
+            `
+                @group(0) @binding(0) var<uniform> numStrandVertices: f32;
+                @group(0) @binding(1) var<storage> positions: array<f32>;
+
+                struct vData
+                {
+                    @builtin(position) position : vec4f
+                };
+
+                @vertex
+                fn vertexMain(@location(0) pos: vec2f,
+                                @builtin(instance_index) instance: u32,
+                                @builtin(vertex_index) vert_idx: u32)
+                    -> vData
+                {
+                    let i = f32(instance);
+                    var output : vData;
+                    
+                    output.position = vec4f(
+                                        positions[u32(i * numStrandVertices) + vert_idx * 2],
+                                        positions[u32(i * numStrandVertices) + vert_idx * 2 + 1],
+                                        0.0f, 1.0f);
+
+                    return output;
+                }
+
+                @fragment
+                fn fragmentMain(fragData: vData) -> @location(0) vec4f
+                {
+                    return vec4(1.0f, 1.0f, 1.0f, 1);
+                }
+            `
+        });
+
+        const simulationShaderModule = device.createShaderModule(
+        {
+            label: "Hair simulation shader",
+            code: 
+            `
+                @group(0) @binding(0) var<uniform> numStrandVertices: f32;
+                @group(0) @binding(1) var<storage, read_write> positions: array<f32>;
+                @group(0) @binding(2) var<storage, read_write> velocities: array<f32>;
+
+                const mass = 20.0f;
+                const gravity : f32 = -10.0f;
+                const deltaTime : f32 = 1.0f/60.0f;
+                const damping = 3.0f;
+                const k = 5.0f;
+
+                fn calculateForces(idx: u32, last_vertex: bool) -> f32
+                {
+                    let vi = velocities[idx];
+                    
+                    let dist1 = positions[idx] - positions[idx - 2];
+                    let dist2 = positions[idx + 2] - positions[idx];
+
+                    var force = mass * gravity + k * dist1 + damping * vi;
+
+                    if (!last_vertex)
+                    {
+                        force += (-1.0f * k * dist2 - damping * velocities[idx + 2]);
+                    }
+                    
+                    return force;
+                }
+
+                @compute
+                @workgroup_size(${WORKGROUP_SIZE})
+                fn computeMain(@builtin(global_invocation_id) id: vec3<u32>)
+                {                   
+                    let idx = id.x;
+
+                    let vert_idx = f32(idx % u32(numStrandVertices));
+
+                    if (idx % 2 == 1 && vert_idx > 1.0f)
+                    {
+                        let force: f32 = calculateForces(idx, vert_idx == numStrandVertices - 1.0f);
+                        let acceleration: f32 = force / mass;
+
+                        velocities[idx] = velocities[idx] + acceleration * deltaTime;
+                        positions[idx] = positions[idx] + velocities[idx] * deltaTime;
+                    }
+                }
+            `
+        });
+
+        // Create the bind group layout and pipeline layout.
+        const bindGroupLayoutCompute = device.createBindGroupLayout(
+        {
+            label: "Hair Bind Group Layout",
+            entries: 
+            [{
+                binding: 0,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: {} // Hair uniform buffer
+            },
+            {
+                binding: 1,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair positions buffer
+            },
+            {
+                binding: 2,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair velocities buffer
+            }]
+        });
+
+        const bindGroupLayoutVertex = device.createBindGroupLayout(
+        {
+            label: "Hair Group Layout Vertex",
+            entries: 
+            [{
+                binding: 0,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: {} // Hair uniform buffer
+            },
+            {
+                binding: 1,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "read-only-storage"} // Hair positions buffer
+            }]
+        });
+
+        const pipelineLayoutCompute = device.createPipelineLayout(
+        {
+            label: "Hair Pipeline Layout",
+            bindGroupLayouts: [ bindGroupLayoutCompute ]
+        });
+
+        const pipelineLayoutVertex = device.createPipelineLayout(
+        {
+            label: "Hair Pipeline Layout",
+            bindGroupLayouts: [ bindGroupLayoutVertex ]
+        });
+
+        const hairPipeline = device.createRenderPipeline(
+        {
+            label: "Hair pipeline",
+            layout: pipelineLayoutVertex,
+            vertex: {
+                module: hairShaderModule,
+                entryPoint: "vertexMain",
+                buffers: [vertexBufferLayout]
+            },
+            fragment: {
+                module: hairShaderModule,
+                entryPoint: "fragmentMain",
+                targets: 
+                [{
+                    format: canvasFormat
+                }]
+            },
+            primitive: {
+                topology: 'line-strip',
+                stripIndexFormat: 'uint16'
+            }
+        });
+
+        // Create a compute pipeline that updates the game state.
+        const simulationPipeline = device.createComputePipeline(
+        {
+            label: "Simulation pipeline",
+            layout: pipelineLayoutCompute,
+            compute:
+            {
+                module: simulationShaderModule,
+                entryPoint: "computeMain",
+            }
+        });
+
+        device.queue.writeBuffer(vertexBuffer, 0, strandVertices);
+        device.queue.writeBuffer(indexBuffer, 0, indices);
+        device.queue.writeBuffer(uniformBuffer, 0, uniforms);
+
+        const bindGroupCompute = device.createBindGroup(
+        {
+            label: "Simulation bind group",
+            layout: bindGroupLayoutCompute,
+            entries: [
+            {
+                binding: 0,
+                resource: { buffer: uniformBuffer }
+            },
+            {
+                binding: 1,
+                resource: { buffer: hairStateStorage[0] }
+            },
+            {
+                binding: 2,
+                resource: { buffer: hairStateStorage[1] }
+            }
+            ]
+        });
+
+        const bindGroupVertex = device.createBindGroup(
+        {
+            label: "Vertex Bind group",
+            layout: bindGroupLayoutVertex,
+            entries: [
+            {
+                binding: 0,
+                resource: { buffer: uniformBuffer }
+            },
+            {
+                binding: 1,
+                resource: { buffer: hairStateStorage[0] }
+            }
+            ]
+        });
+
+        function simulateHair()
+        {
+            // create command buffer
+            const encoder = device.createCommandEncoder();
+
+            const computePass = encoder.beginComputePass();
+
+            computePass.setPipeline(simulationPipeline);
+            computePass.setBindGroup(0, bindGroupCompute);
+
+            const workgroupCount = Math.ceil((numHairStrands * strandVertices.length) / WORKGROUP_SIZE);
+            computePass.dispatchWorkgroups(workgroupCount);
+
+            computePass.end();
+
+            // renderpass
+            const pass = encoder.beginRenderPass(
+            {
+                colorAttachments:
+                [{
+                    view: context.getCurrentTexture().createView(),
+                    clearValue: [0.2, 0.2, 0.2, 1],
+                    loadOp: "clear",
+                    storeOp: "store",
+                }]
+            });
+
+            pass.setIndexBuffer(indexBuffer, "uint16");
+            pass.setPipeline(hairPipeline);
+            pass.setVertexBuffer(0, vertexBuffer);            
+            pass.setBindGroup(0, bindGroupVertex);
+            pass.drawIndexed(indices.length, numHairStrands);
+
+            pass.end();
+
+            // Finish command buffer and immediately submit it
+            device.queue.submit([encoder.finish()]);
+
+            requestAnimationFrame(simulateHair);
+        }
+
+        simulateHair();
+
+    </script>
+</body>
+</html>
