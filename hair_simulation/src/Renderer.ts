@@ -12,15 +12,39 @@ export class Renderer
 
     private uniforms!: Float32Array;
 
+    private hairStateStorage!: GPUBuffer[]
+
     private shaderModule!: GPUShaderModule;
     private bindGroupLayout!: GPUBindGroupLayout;
-    private bindGroup!: GPUBindGroup
+    private bindGroup!: GPUBindGroup[];
     private pipeline!: GPURenderPipeline;
     private renderPassDescriptor!: GPURenderPassDescriptor;
 
-    private physics!: Physics;
+    private compute_shaderModule!: GPUShaderModule;
+    private compute_bindGroupLayout!: GPUBindGroupLayout;
+    private compute_bindGroup!: GPUBindGroup[];
+    private compute_pipeline!: GPUComputePipeline;
 
-    private readonly MAX_SIZE : number = 100;
+    private step: boolean = false;
+
+    private readonly numHairStrands = 100.0;
+    
+    // TODO: Is the vertex buffer redundant?
+    // Vertex and index data
+    private readonly strandVertices = new Float32Array(
+    [
+        //   X, Y, Z
+        0.0, 0.0, 2.8,
+        0.0, -0.2, 2.8,
+        0.0, -0.4, 2.8,
+        0.0, -0.6, 2.8
+    ]);
+
+    private readonly indices = new Uint16Array([0, 1, 2, 3]);
+
+    // Keeping everything in one class for now
+    // TODO: Add this later
+    // private m_physics!: Physics;
 
     constructor(private canvas: HTMLCanvasElement) {}
 
@@ -30,12 +54,12 @@ export class Renderer
         await this.getGPU();
         this.connectCanvas();
 
-        this.physics = new Physics();
-
         // Pipeline
         this.loadShaders();
+        this.loadComputeShader();
         this.createBuffers();
         this.createPipeline();
+        this.compute_createPipeline();
 
         // Render
         this.createRenderPassDescriptor();
@@ -72,7 +96,7 @@ export class Renderer
 
     private connectCanvas()
     {
-        // // Connect canvas with GPU interface
+        // Connect canvas with GPU interface
         const context = this.canvas.getContext("webgpu");
 
         if (!context)
@@ -96,225 +120,311 @@ export class Renderer
     {
         // Vertex and Fragment shaders
         this.shaderModule = this.device.createShaderModule(
+        {
+            label: "Hair shader",
+            code:
+            /* wgsl */ `
+            @group(0) @binding(0) var<uniform> sceneData: SceneData;
+            @group(0) @binding(1) var<storage> positions: array<f32>;
+
+            struct Ray
             {
-                label: "Ray tracing shader",
-                code:
-                /* wgsl */ `
-                @group(0) @binding(0) var<uniform> scene: Scene;
+                origin: vec3f,
+                dir: vec3f
+            }
 
-                // TODO: Is using a TS var here okay?
-                const MAX_SIZE = ${this.MAX_SIZE};
+            struct Camera
+            {
+                location: vec3f,
+                focalLength: f32,
+                imageDimensions: vec2f,
+                filmPlaneDimensions: vec2f
+            };
 
-                struct Ray
+            struct SceneData
+            {
+                resolution: vec2f,
+                numStrandVertices: f32
+            };
+
+            fn viewTransformMatrix(eye: vec3f, lookAt: vec3f, up: vec3f) 
+                                    -> mat4x4<f32>
+            {
+                var forward = normalize(lookAt - eye);
+                var right = normalize(cross(up, forward));
+                var u = normalize(cross(forward, right));
+
+                return mat4x4<f32>(
+                    right.x, u.x, forward.x, 0.0f,
+                    right.y, u.y, forward.y, 0.0f,
+                    right.z, u.z, forward.z, 0.0f,
+                    -dot(eye, right), -dot(eye, u), -dot(eye, forward), 1.0f
+                );
+            }
+
+            fn projectionMatrix(angle: f32, aspect_ratio: f32, near: f32, far: f32) -> mat4x4<f32>
+            {
+                let a: f32 = 1.0 / tan(radians(angle/2));
+                let m1 = far/(far - near);
+                let m2 = -near * far/(far -near);
+
+                return mat4x4<f32>(
+                    vec4<f32>(a * aspect_ratio, 0.0, 0.0, 0.0),
+                    vec4<f32>(0.0, a, 0.0, 0.0),
+                    vec4<f32>(0.0f, 0.0f, m1, 1.0),
+                    vec4<f32>(0.0, 0.0, m2, 0.0)
+                );
+            }
+
+            @vertex
+            fn vertexMain(@builtin(instance_index) instance: u32,
+                            @builtin(vertex_index) vert_idx: u32)
+                -> @builtin(position) vec4f
+            {
+                // Get pos from storage buffer                    
+                let i: f32 = f32(instance);
+                let numStrandVertices: f32 = sceneData.numStrandVertices;
+
+                // vertex index is indicative of position of particle within a hair strand
+                // TODO: Is there a better way to get this data? Uniform buffer or something?
+                var pos: vec4f = vec4f(
+                            positions[u32(i * numStrandVertices) + vert_idx * 3],
+                            positions[u32(i * numStrandVertices) + vert_idx * 3 + 1],
+                            positions[u32(i * numStrandVertices) + vert_idx * 3 + 2],
+                            1.0f);
+
+                var cam: Camera;
+                cam.imageDimensions = sceneData.resolution;
+
+                // meters
+                cam.filmPlaneDimensions = vec2f(25.0f, 25.0f);
+
+                let fov = 30.0f;
+                cam.focalLength = (cam.filmPlaneDimensions.y / 2.0f)/tan(radians(fov/2));
+
+                cam.location = vec3f(0.8f, 0.6f, -2.0f);
+
+                let lookAt: vec3f = vec3f(0.0f, 0.0f, 2.8f);
+
+                var view: mat4x4<f32> = viewTransformMatrix(
+                    cam.location,
+                    lookAt,
+                    vec3f(0.0f, 1.0f, 0.0f)
+                );
+
+                let angle = 30.0f;
+
+                // arbitrary far clip plane for now
+                var projection : mat4x4<f32> = projectionMatrix(angle, sceneData.resolution.y/sceneData.resolution.x, 1.0f, 100.0f);
+                var result: vec4f = projection * view * pos;
+
+                return result;
+            }
+
+            @fragment
+            fn fragmentMain(@builtin(position) fragCoord: vec4f)
+                -> @location(0) vec4f
+            {
+                return vec4f(1.0f, 1.0f, 1.0f, 1.0f);
+            }
+            `
+        });
+    }
+
+    private loadComputeShader()
+    {
+        this.compute_shaderModule = this.device.createShaderModule(
+        {
+            label: "Hair simulation shader",
+            code: 
+            /* wgsl */ `
+                @group(0) @binding(0) var<uniform> sceneData: SceneData;
+                @group(0) @binding(1) var<storage> positionsIn: array<f32>;
+                @group(0) @binding(2) var<storage> velocitiesIn: array<f32>;
+                @group(0) @binding(3) var<storage, read_write> positionsOut: array<f32>;
+                @group(0) @binding(4) var<storage, read_write> velocitiesOut: array<f32>;
+
+                struct SceneData
                 {
-                    origin: vec3f,
-                    dir: vec3f
-                }
-
-                struct Scene
-                {
-                    numObjects : u32,
-                    sphereOffset: u32,
-                    planeOffset: u32,
-                    coneOffset: u32,
-
-                    data: array<vec4<f32>, MAX_SIZE / 4>
+                    resolution: vec2f,
+                    numStrandVertices: f32
                 };
 
-                struct Sphere
+
+                const mass = 0.1f;
+                const gravity : f32 = -9.8f;
+                const deltaTime : f32 = 1.0f/60.0f;
+
+                const damping = 0.0f;
+                const k = 40.0f;
+                const rest_length = 0.2f; // TODO: Don't hardcode
+
+                // TODO: Why is the force reducing over time even when particles are in the same position?
+                fn calculateForces(idx: u32, last_vertex: bool) -> vec3<f32>
                 {
-                    center: vec3f,
-                    radius: f32
-                };
+                    let vi : vec3<f32> = vec3(velocitiesIn[idx], velocitiesIn[idx + 1],
+                                            velocitiesIn[idx + 2]);
 
-                // struct Plane
-                // {
-                //     center: vec3f
-                // };
+                    let curr_pos : vec3<f32> = vec3(positionsIn[idx], positionsIn[idx + 1],
+                                                 positionsIn[idx + 2]);
+                    let prev_pos : vec3<f32> = vec3(positionsIn[idx  - 3], positionsIn[idx - 2],
+                                                positionsIn[idx - 1]);
 
-                struct Cone
-                {
-                    center: vec3f
-                };
-
-                struct Camera
-                {
-                    focalLength: f32,
-
-                    // TODO: Make these vectors
-                    imageHeight: f32,
-                    imageWidth: f32,
-                    filmPlaneHeight: f32,
-                    filmPlaneWidth: f32
-                };
-
-                @vertex
-                fn vertexMain(@location(0) pos: vec2f)
-                    -> @builtin(position) vec4f
-                {
-                    return vec4f(pos, 0.0f, 1.0f);
-                }
-
-                fn viewTransformMatrix(eye: vec3f, lookAt: vec3f, down: vec3f) -> mat4x4<f32>
-                {
-                    var forward = normalize(lookAt - eye);
-                    var right = normalize(cross(down, forward));
-                    var d = normalize(cross(right, -forward));
-
-                    return mat4x4<f32>(
-                        right.x, d.x, forward.x, 0.0f,
-                        right.y, d.y, forward.y, 0.0f,
-                        right.z, d.z, forward.z, 0.0f,
-                        -dot(eye, right), -dot(eye, d), -dot(eye, forward), 1.0f
-                    );
-                }
-
-                fn sphereRayIntersectDist(ray: Ray, sphere: Sphere) -> f32
-                {
-                    var raySphereToCam: vec3f = ray.origin - sphere.center;
-
-                    var a : f32 = dot(ray.dir, ray.dir);
-                    var b : f32 = 2.0f * dot(ray.dir, raySphereToCam);
-                    var c : f32 = dot(raySphereToCam, raySphereToCam) - sphere.radius * sphere.radius;
-                    var discriminant = b * b - 4.0f * a * c;
-
-                    if (discriminant < 0.0f)
-                    {
-                        return -1.0f;
-                    }
-
-                    var closestT: f32 = (-b - sqrt(discriminant)) / (2.0f * a);
-
-                    // Make sure that the hit is in front of the camera
-                    return select(-1.0f, closestT, closestT > 0.0f);
-                }
-
-                @fragment
-                fn fragmentMain(@builtin(position) fragCoord: vec4f)
-                    -> @location(0) vec4f
-                {
-                    // NOTE: +Y is towards the bottom of the screen
-
-                    // TODO: Making everything square for now, but will need to deal with aspect ratios later
-                    let resolution = vec2f(500.0f, 500.0f);
-                    let aspect = resolution.x / resolution.y;
-                    let uv : vec2f = (fragCoord.xy / resolution.y) * 2.0f - 1.0f;
-
-
-                    var cam: Camera;
-                    cam.imageHeight = resolution.y;
-                    cam.imageWidth = resolution.x;
-
-                    // TODO: Is the focal length okay?
-                    // Look into projection matrix/perspective logic?
-                    // Should I be checking for intersections "only past the focal plane"?
+                    let length1 : f32 = length(curr_pos - prev_pos);
+                    let dir1 : vec3<f32> = normalize(prev_pos - curr_pos);
                     
-                    cam.focalLength = 35.0f;
-                    cam.filmPlaneHeight = 25.0f;
-                    cam.filmPlaneWidth = 25.0f;
+                    // Spring force towards previous strand
+                    var force : vec3<f32> = dir1 * (length1 - rest_length) * k;
 
+                    force += vi * damping;
 
-                    let w : f32 = cam.filmPlaneWidth/cam.imageWidth;
-                    let h : f32 = cam.filmPlaneHeight/cam.imageHeight;
-                    let pixelVal = vec2f((fragCoord.x - resolution.x * 0.5f) * w,
-                                    (fragCoord.y - resolution.y * 0.5f) * h)
-                                    + vec2f(0.5f * w, 0.5f * h);
+                    force.y += mass * gravity;
 
-                    var eye = vec3f(16.687, -2.639, 0.573);
-
-                    // Temp
-                    var sphere: Sphere;
-                    sphere.radius = 1.0f;
-                    sphere.center = vec3f(9.11, -1.63, 1.352);
-
-                    var sphere2: Sphere;
-                    sphere2.radius = 0.927f;
-                    sphere2.center = vec3f(11.361, -2.447, 0.124);
-
-                    var view = viewTransformMatrix(
-                        eye,
-                        sphere2.center,
-                        vec3f(0.0f, 1.0f, 0.0f)
-                    );
-
-                    var rayDir : vec3f = normalize(vec3f(pixelVal, cam.focalLength));
-
-                    var ray: Ray;
-                    ray.origin = vec3f(0.0f);
-                    ray.dir = rayDir;
-
-                    sphere.center = (view * vec4f(sphere.center, 1.0f)).xyz;
-                    sphere2.center = (view * vec4f(sphere2.center, 1.0f)).xyz;
-
-                    var hitDist1 = sphereRayIntersectDist(ray, sphere);
-                    var hitDist2 = sphereRayIntersectDist(ray, sphere2);
-
-                    if (hitDist1 > 0.0f && hitDist2 > 0.0f)
+                    if (!last_vertex)
                     {
-                        if (hitDist1 < hitDist2)
-                        {
-                            return vec4f(0.0f, 0.8f, 0.0f, 1.0f);
-                        }
+                        let next_pos : vec3<f32> = vec3(positionsIn[idx + 3], positionsIn[idx + 4],
+                                                        positionsIn[idx + 5]
+                                                    );
 
-                        return vec4f(0.8f, 0.0f, 0.0f, 1.0f);
-                    }
-                    else if (hitDist1 > 0.0f)
-                    {
-                        return vec4f(0.0f, 0.8f, 0.0f, 1.0f);
-                    }
-                    else if (hitDist2 > 0.0f)
-                    {
-                        return vec4f(0.8f, 0.0f, 0.0f, 1.0f);
-                    }
+                        let length2: f32 = length(curr_pos - next_pos);
+                        let dir2 : vec3<f32> = normalize(curr_pos - next_pos);
+                        
+                        // Spring force towards next strand
+                        force += dir2 * (length2 - rest_length) * k;
 
-                    return vec4f(0.0f, 0.0f, 0.0f, 1.0f);
+                        let v_last : vec3<f32> = vec3(velocitiesIn[idx + 3], velocitiesIn[idx + 4],
+                                                    velocitiesIn[idx + 5]
+                                                );
+                        
+                        force += -v_last * damping;
+                    }
+                    
+                    return force;
                 }
-                `
-            });
+
+                @compute
+                @workgroup_size(8) // TODO: Don't hard code workgroup size
+                fn computeMain(@builtin(global_invocation_id) id: vec3<u32>)
+                {                   
+                    let idx = id.x;
+
+                    let numStrandVertices = sceneData.numStrandVertices;
+
+                    let vert_idx = f32(idx % u32(numStrandVertices));
+
+                    if ( vert_idx > 2.0f && idx % 3 == 0 )
+                    {
+                        let force: vec3<f32> = calculateForces(idx, vert_idx >= numStrandVertices - 3.0f);
+                        let acceleration: vec3<f32> = force / mass;
+                        // let acceleration = vec3f(0.0f, 0.0f, 0.0f);
+
+                        // TODO: Do we even need to store velocities?
+                        // Maybe for some force/damping?
+                        velocitiesOut[idx] = acceleration.x * deltaTime;
+                        velocitiesOut[idx + 1] = acceleration.y * deltaTime;
+                        velocitiesOut[idx + 2] = acceleration.z * deltaTime;
+
+                        positionsOut[idx] = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
+                        positionsOut[idx + 1] = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
+                        positionsOut[idx + 2] = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;
+                    }
+                }
+            `
+        });
     }
 
     private createBuffers()
-    {
+    {        
         // Vertex Buffer
-        const vertices = new Float32Array(
-        [
-            // 2 Triangles
-            // X, Y
-            -1.0, -1.0,
-            +1.0, -1.0,
-            -1.0, +1.0,
-            +1.0, +1.0
-        ]);
-
         this.vertexBuffer = this.device.createBuffer(
         {
-            label: "Vertex Buffer",
-            size: vertices.byteLength,
+            label: "Strand vertices",
+            size: this.strandVertices.byteLength,
             usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
         });
-
-        const indices = new Uint16Array([0, 1, 2, 1, 3, 2]);
 
         // Index Buffer
         this.indexBuffer = this.device.createBuffer(
         {
-            label: "Index Buffer",
-            size: indices.byteLength,
+            label: "Strand indices",
+            size: this.indices.byteLength,
             usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST
         });
 
         // Uniform buffer
-        this.uniforms = new Float32Array(this.MAX_SIZE);
+        this.uniforms = new Float32Array(3);
+
+        // Resolution
+        this.uniforms[0] = this.canvas.width;
+        this.uniforms[1] = this.canvas.height;
+        this.uniforms[2] = this.strandVertices.length;
+        
         this.uniformBuffer = this.device.createBuffer(
         {
             label: "Uniform buffer",
-            size: this.uniforms.byteLength,
+            size: Math.ceil(this.uniforms.byteLength / 16) * 16,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
 
         // Write buffers
-        this.device.queue.writeBuffer(this.vertexBuffer, 0, vertices);
-        this.device.queue.writeBuffer(this.indexBuffer, 0, indices);
+        this.device.queue.writeBuffer(this.vertexBuffer, 0, this.strandVertices);
+        this.device.queue.writeBuffer(this.indexBuffer, 0, this.indices);
+        this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
+
+        const radius = 0.5;
+        const scalpCenterX = 0.0;
+        const scalpCenterY = 0.5;
+
+        // Storage Buffers
+        const positionsArray = new Float32Array(this.numHairStrands * this.strandVertices.length);
+        const velocitiesArray = new Float32Array(this.numHairStrands * this.strandVertices.length);
+
+        this.hairStateStorage = [
+            this.device.createBuffer(
+            {
+                label: "Positions",
+                size: positionsArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+            this.device.createBuffer(
+            {
+                label: "Velocities",
+                size: velocitiesArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+            this.device.createBuffer(
+            {
+                label: "PositionsCopy",
+                size: positionsArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+            this.device.createBuffer(
+            {
+                label: "VelocitiesCopy",
+                size: velocitiesArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+        ];
+
+        this.device.queue.writeBuffer(this.hairStateStorage[1], 0, velocitiesArray);
+        this.device.queue.writeBuffer(this.hairStateStorage[3], 0, velocitiesArray);
+        
+        // fill positions
+        for (let ii = 0; ii < this.numHairStrands; ii++)
+        {
+            for (let jj = 0; jj < this.strandVertices.length; jj += 3)
+            {
+                let theta = ii * Math.PI/(this.numHairStrands - 1.0);
+                let base_idx = ii * this.strandVertices.length + jj;
+
+                positionsArray[base_idx] = radius * Math.cos(theta) + scalpCenterX + this.strandVertices[jj];
+                positionsArray[base_idx + 1] = -1.0 * radius * Math.sin(theta) + scalpCenterY + this.strandVertices[jj + 1];
+                positionsArray[base_idx + 2] = this.strandVertices[jj + 2];
+            }
+        }
+
+        this.device.queue.writeBuffer(this.hairStateStorage[0], 0, positionsArray);
+        this.device.queue.writeBuffer(this.hairStateStorage[2], 0, positionsArray);
     }
 
     private createPipeline()
@@ -322,11 +432,11 @@ export class Renderer
         // Vertex Buffer Layout
         const vertexBufferLayout : GPUVertexBufferLayout =
         {
-            // 2 values per vertex (x, y)
-            arrayStride: 8,
+            // 3 values per vertex (x, y, z)
+            arrayStride: 12,
             attributes:
             [{
-                format: "float32x2",
+                format: "float32x3",
                 offset: 0,
                 shaderLocation: 0
             }]
@@ -334,58 +444,192 @@ export class Renderer
 
         this.bindGroupLayout = this.device.createBindGroupLayout(
         {
-            label: "Raytracer bind group layout",
-            entries:
+            label: "Hair Group Layout Vertex",
+            entries: 
             [{
                 binding: 0,
                 visibility: GPUShaderStage.VERTEX,
-                buffer: {} // Uniform buffer
+                buffer: {} // Hair uniform buffer
+            },
+            {
+                binding: 1,
+                visibility: GPUShaderStage.VERTEX,
+                buffer: { type: "read-only-storage"} // Hair positions buffer
             }]
         });
 
         // TODO: Should this be done here or elsewhere?
-        this.bindGroup = this.device.createBindGroup(
-        {
-            label: "Vertex Bind group",
-            layout: this.bindGroupLayout,
-            entries: [
-                {
-                    binding: 0,
-                    resource: { buffer: this.uniformBuffer }
-                }
-            ]
-        });
+        this.bindGroup = [
+            this.device.createBindGroup(
+            {
+                label: "Vertex Bind group A",
+                layout: this.bindGroupLayout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: this.uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: this.hairStateStorage[0] }
+                    }
+                ]
+            }),
+            this.device.createBindGroup(
+            {
+                label: "Vertex Bind group B",
+                layout: this.bindGroupLayout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: this.uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: this.hairStateStorage[2] }
+                    }
+                ]
+            })
+        ];
 
         // Pipeline Layout
         const pipelineLayout = this.device.createPipelineLayout(
         {
-            label: "Raytracer Pipeline Layout",
+            label: "Hair Pipeline Layout Vertex",
             bindGroupLayouts: [ this.bindGroupLayout ]
         });
 
         // Pipeline
         this.pipeline = this.device.createRenderPipeline(
         {
-            label: "Raytracing pipeline",
+            label: "Hair pipeline",
             layout: pipelineLayout,
-            vertex:
-            {
+            vertex: {
                 module: this.shaderModule,
                 entryPoint: "vertexMain",
                 buffers: [vertexBufferLayout]
             },
-            fragment:
-            {
+            fragment: {
                 module: this.shaderModule,
                 entryPoint: "fragmentMain",
-                targets:
+                targets: 
                 [{
                     format: this.canvasFormat
                 }]
             },
-            primitive:
+            primitive: {
+                topology: 'point-list',
+                // stripIndexFormat: 'uint16'
+            }
+        });
+    }
+
+    private compute_createPipeline()
+    {
+        // Create the bind group layout and pipeline layout.
+        this.compute_bindGroupLayout = this.device.createBindGroupLayout(
+        {
+            label: "Hair Bind Group Layout",
+            entries: 
+            [{
+                binding: 0,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: {} // Hair uniform buffer
+            },
             {
-                topology: 'triangle-list',
+                binding: 1,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "read-only-storage"} // Hair positions buffer
+            },
+            {
+                binding: 2,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "read-only-storage"} // Hair velocities buffer
+            },
+            {
+                binding: 3,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair positions buffer
+            },
+            {
+                binding: 4,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair velocities buffer
+            }]
+        });
+
+
+        this.compute_bindGroup = [
+            this.device.createBindGroup(
+            {
+                label: "Simulation bind group A",
+                layout: this.compute_bindGroupLayout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: this.uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: this.hairStateStorage[0] }
+                    },
+                    {
+                        binding: 2,
+                        resource: { buffer: this.hairStateStorage[1] }
+                    },
+                    {
+                        binding: 3,
+                        resource: { buffer: this.hairStateStorage[2] }
+                    },
+                    {
+                        binding: 4,
+                        resource: { buffer: this.hairStateStorage[3] }
+                    }
+                ]
+            }),
+            this.device.createBindGroup(
+            {
+                label: "Simulation bind group B",
+                layout: this.compute_bindGroupLayout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: this.uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: this.hairStateStorage[2] }
+                    },
+                    {
+                        binding: 2,
+                        resource: { buffer: this.hairStateStorage[3] }
+                    },
+                    {
+                        binding: 3,
+                        resource: { buffer: this.hairStateStorage[0] }
+                    },
+                    {
+                        binding: 4,
+                        resource: { buffer: this.hairStateStorage[1] }
+                    }
+                ]
+            })
+        ];
+
+        const compute_pipelineLayout = this.device.createPipelineLayout(
+        {
+            label: "Hair Pipeline Layout Compute",
+            bindGroupLayouts: [ this.compute_bindGroupLayout ]
+        });
+
+        this.compute_pipeline = this.device.createComputePipeline(
+        {
+            label: "Simulation pipeline",
+            layout: compute_pipelineLayout,
+            compute:
+            {
+                module: this.compute_shaderModule,
+                entryPoint: "computeMain",
             }
         });
     }
@@ -408,6 +652,7 @@ export class Renderer
 
     private render()
     {
+        const bindGroupIdx = Number(this.step);
         // update view
         (this.renderPassDescriptor.colorAttachments as any)[0].view =
             this.context.getCurrentTexture().createView();
@@ -415,22 +660,33 @@ export class Renderer
         // create command buffer
         const encoder = this.device.createCommandEncoder();
 
+        // compute pass
+        const computePass = encoder.beginComputePass();
+
+        computePass.setPipeline(this.compute_pipeline);
+        computePass.setBindGroup(0, this.compute_bindGroup[bindGroupIdx]);
+
+        // TODO: workgroup size hardcoded for now
+        const workgroupCount = Math.ceil((this.numHairStrands * this.strandVertices.length) / 8);
+        computePass.dispatchWorkgroups(workgroupCount);
+
+        computePass.end();
+
         // renderpass
         const pass = encoder.beginRenderPass(this.renderPassDescriptor);
 
         pass.setIndexBuffer(this.indexBuffer, "uint16");
         pass.setPipeline(this.pipeline);
         pass.setVertexBuffer(0, this.vertexBuffer);
-        pass.setBindGroup(0, this.bindGroup);
-
-        // Hard-coded since we're only using the vertex buffer for drawing
-        // 2 triangles to cover the screen
-        pass.drawIndexed(6);
+        pass.setBindGroup(0, this.bindGroup[bindGroupIdx]);
+        pass.drawIndexed(this.indices.length, this.numHairStrands);
 
         pass.end();
 
         // Finish command buffer and immediately submit it
         this.device.queue.submit([encoder.finish()]);
+
+        this.step = !this.step;
 
         // Loop every frame
         requestAnimationFrame(() => this.render());

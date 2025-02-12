@@ -6,7 +6,7 @@
     <title>Hair Simulator</title>
 </head>
 <body>
-    <canvas id="webgpu-canvas" width="400" height="400"></canvas>
+    <canvas id="webgpu-canvas" width="500" height="500"></canvas>
     <script type="module">
 
         // ---------------------------- WebGPU Setup --------------------------
@@ -157,7 +157,7 @@
         {
             label: "Hair shader",
             code:
-            `
+            /* wgsl*/ `
                 @group(0) @binding(0) var<uniform> numStrandVertices: f32;
                 @group(0) @binding(1) var<storage> positions: array<f32>;
 
@@ -195,7 +195,7 @@
         {
             label: "Hair simulation shader",
             code: 
-            `
+            /* wgsl */ `
                 @group(0) @binding(0) var<uniform> numStrandVertices: f32;
                 @group(0) @binding(1) var<storage> positionsIn: array<f32>;
                 @group(0) @binding(2) var<storage> velocitiesIn: array<f32>;
@@ -212,7 +212,7 @@
 
                 fn calculateForces(idx: u32, last_vertex: bool) -> vec2<f32>
                 {
-                    let vi : vec2<f32> = vec2(velocitiesIn[idx], velocitiesIn[idx]);
+                    let vi : vec2<f32> = vec2(velocitiesIn[idx], velocitiesIn[idx + 1]);
 
                     let curr_pos : vec2<f32> = vec2(positionsIn[idx], positionsIn[idx + 1]);
                     let prev_pos : vec2<f32> = vec2(positionsIn[idx  - 2], positionsIn[idx - 1]);
