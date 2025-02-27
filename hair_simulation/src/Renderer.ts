@@ -35,12 +35,25 @@ export class Renderer
     [
         //   X, Y, Z
         0.0, 0.0, 2.8,
-        -0.4, -0.2, 2.8,
-        -0.8, -0.4, 2.8,
-        -1.2, -0.6, 2.8
+        -0.2, -0.2, 2.8,
+        -0.4, -0.4, 2.8,
+        -0.6, -0.6, 2.8,
+        // -0.0, -0.2, 2.8,
+        // -0.0, -0.25, 2.8,
+        // -0.0, -0.3, 2.8,
+        // -0.0, -0.35, 2.8,
+        // -0.0, -0.4, 2.8,
+        // -0.0, -0.45, 2.8,
+        // -0.0, -0.5, 2.8,
+        // -0.0, -0.55, 2.8,
+        // -0.0, -0.6, 2.8,
+        // -0.0, -0.65, 2.8,
+        // -0.0, -0.7, 2.8,
+        // -0.0, -0.75, 2.8,
     ]);
 
-    private readonly indices = new Uint16Array([0, 1, 2, 3]);
+    private readonly indices = new Uint16Array(
+        Array.from({ length: this.strandVertices.length / 3 }, (_, i) => i));
 
     // Keeping everything in one class for now
     // TODO: Add this later
@@ -227,7 +240,7 @@ export class Renderer
                 // TODO: Clean code and var names
                 var pos2: vec3f;
                
-                if (vert_idx < 3)
+                if ( vert_idx < u32(numStrandVertices - 1.0) )
                 {
                     pos2 = vec3f(
                         positions[u32(i * numStrandVertices) + (vert_idx + 1) * 3],
