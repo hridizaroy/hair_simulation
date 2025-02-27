@@ -35,9 +35,9 @@ export class Renderer
     [
         //   X, Y, Z
         0.0, 0.0, 2.8,
-        0.0, -0.2, 2.8,
-        0.0, -0.4, 2.8,
-        0.0, -0.6, 2.8
+        -0.4, -0.2, 2.8,
+        -0.8, -0.4, 2.8,
+        -1.2, -0.6, 2.8
     ]);
 
     private readonly indices = new Uint16Array([0, 1, 2, 3]);
@@ -176,10 +176,16 @@ export class Renderer
                 );
             }
 
+            struct VertReturn
+            {
+                @builtin(position) pos : vec4f,
+                @location(0) dir: vec3f
+            }
+
             @vertex
             fn vertexMain(@builtin(instance_index) instance: u32,
                             @builtin(vertex_index) vert_idx: u32)
-                -> @builtin(position) vec4f
+                -> VertReturn
             {
                 // Get pos from storage buffer                    
                 let i: f32 = f32(instance);
@@ -202,7 +208,7 @@ export class Renderer
                 let fov = 30.0f;
                 cam.focalLength = (cam.filmPlaneDimensions.y / 2.0f)/tan(radians(fov/2));
 
-                cam.location = vec3f(0.8f, 0.6f, -2.0f);
+                cam.location = vec3f(0.8f, 0.6f, 0.0f);
 
                 let lookAt: vec3f = vec3f(0.0f, 0.0f, 2.8f);
 
@@ -217,15 +223,45 @@ export class Renderer
                 // arbitrary far clip plane for now
                 var projection : mat4x4<f32> = projectionMatrix(angle, sceneData.resolution.y/sceneData.resolution.x, 1.0f, 100.0f);
                 var result: vec4f = projection * view * pos;
+            
+                // TODO: Clean code and var names
+                var pos2: vec3f;
+               
+                if (vert_idx < 3)
+                {
+                    pos2 = vec3f(
+                        positions[u32(i * numStrandVertices) + (vert_idx + 1) * 3],
+                        positions[u32(i * numStrandVertices) + (vert_idx + 1) * 3 + 1],
+                        positions[u32(i * numStrandVertices) + (vert_idx + 1) * 3 + 2]);
+                }
+                else
+                {
+                    pos2 = pos.xyz;
+                    pos = vec4f(
+                        positions[u32(i * numStrandVertices) + (vert_idx - 1) * 3],
+                        positions[u32(i * numStrandVertices) + (vert_idx - 1) * 3 + 1],
+                        positions[u32(i * numStrandVertices) + (vert_idx - 1) * 3 + 2],
+                        1.0f);
+                }
 
-                return result;
+                
+                var returnVal: VertReturn;
+                returnVal.pos = result;
+                returnVal.dir = normalize(pos.xyz - pos2);
+
+                return returnVal;
             }
 
             @fragment
-            fn fragmentMain(@builtin(position) fragCoord: vec4f)
+            fn fragmentMain(input: VertReturn)
                 -> @location(0) vec4f
             {
-                return vec4f(1.0f, 1.0f, 1.0f, 1.0f);
+                let lightDir = normalize(vec3(1.0, 1.0, 0.0));
+                let cosT: f32 = sqrt(1.0 - pow(dot(lightDir, input.dir), 2));
+
+                let lightColor = vec3f(1.0, 1.0, 1.0);
+
+                return vec4f(lightColor * cosT, 1.0f);
             }
             `
         });
@@ -518,8 +554,8 @@ export class Renderer
                 }]
             },
             primitive: {
-                topology: 'point-list',
-                // stripIndexFormat: 'uint16'
+                topology: 'line-strip',
+                stripIndexFormat: 'uint16'
             }
         });
     }
