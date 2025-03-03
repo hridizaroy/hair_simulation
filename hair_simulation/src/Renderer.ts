@@ -35,21 +35,21 @@ export class Renderer
     [
         //   X, Y, Z
         0.0, 0.0, 2.8,
+        -0.05, -0.05, 2.8,
+        -0.1, -0.1, 2.8,
+        -0.15, -0.15, 2.8,
         -0.2, -0.2, 2.8,
+        -0.25, -0.25, 2.8,
+        -0.3, -0.3, 2.8,
+        -0.35, -0.35, 2.8,
         -0.4, -0.4, 2.8,
+        -0.45, -0.45, 2.8,
+        -0.5, -0.5, 2.8,
+        -0.55, -0.55, 2.8,
         -0.6, -0.6, 2.8,
-        // -0.0, -0.2, 2.8,
-        // -0.0, -0.25, 2.8,
-        // -0.0, -0.3, 2.8,
-        // -0.0, -0.35, 2.8,
-        // -0.0, -0.4, 2.8,
-        // -0.0, -0.45, 2.8,
-        // -0.0, -0.5, 2.8,
-        // -0.0, -0.55, 2.8,
-        // -0.0, -0.6, 2.8,
-        // -0.0, -0.65, 2.8,
-        // -0.0, -0.7, 2.8,
-        // -0.0, -0.75, 2.8,
+        -0.65, -0.65, 2.8,
+        -0.7, -0.7, 2.8,
+        -0.75, -0.75, 2.8,
     ]);
 
     private readonly indices = new Uint16Array(
@@ -149,7 +149,6 @@ export class Renderer
             struct Camera
             {
                 location: vec3f,
-                focalLength: f32,
                 imageDimensions: vec2f,
                 filmPlaneDimensions: vec2f
             };
@@ -160,19 +159,36 @@ export class Renderer
                 numStrandVertices: f32
             };
 
-            fn viewTransformMatrix(eye: vec3f, lookAt: vec3f, up: vec3f) 
+            // TODO: Re-check coord system
+            fn viewTransformMatrix(eye: vec3f, lookAt: vec3f, down: vec3f) 
                                     -> mat4x4<f32>
             {
                 var forward = normalize(lookAt - eye);
-                var right = normalize(cross(up, forward));
-                var u = normalize(cross(forward, right));
+                var right = normalize(cross(down, forward));
+                var d = normalize(cross(forward, right));
 
-                return mat4x4<f32>(
-                    right.x, u.x, forward.x, 0.0f,
-                    right.y, u.y, forward.y, 0.0f,
-                    right.z, u.z, forward.z, 0.0f,
-                    -dot(eye, right), -dot(eye, u), -dot(eye, forward), 1.0f
+                var translationMat : mat4x4<f32> = mat4x4<f32>(
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, 0.0,
+                    -eye.x, -eye.y, -eye.z, 1.0
                 );
+
+                var rotationMat : mat4x4<f32> = mat4x4<f32>(
+                    right.x, d.x, forward.x, 0.0,
+                    right.y, d.y, forward.y, 0.0,
+                    right.z, d.z, forward.z, 0.0,
+                    0.0, 0.0, 0.0, 1.0
+                );
+
+                return rotationMat * translationMat;
+
+                // return mat4x4<f32>(
+                //     right.x, u.x, forward.x, 0.0f,
+                //     right.y, u.y, forward.y, 0.0f,
+                //     right.z, u.z, forward.z, 0.0f,
+                //     -dot(eye, right), -dot(eye, d), -dot(eye, forward), 1.0f
+                // );
             }
 
             fn projectionMatrix(angle: f32, aspect_ratio: f32, near: f32, far: f32) -> mat4x4<f32>
@@ -218,9 +234,6 @@ export class Renderer
                 // meters
                 cam.filmPlaneDimensions = vec2f(25.0f, 25.0f);
 
-                let fov = 30.0f;
-                cam.focalLength = (cam.filmPlaneDimensions.y / 2.0f)/tan(radians(fov/2));
-
                 cam.location = vec3f(0.8f, 0.6f, 0.0f);
 
                 let lookAt: vec3f = vec3f(0.0f, 0.0f, 2.8f);
@@ -239,7 +252,7 @@ export class Renderer
             
                 // TODO: Clean code and var names
                 var pos2: vec3f;
-               
+                
                 if ( vert_idx < u32(numStrandVertices - 1.0) )
                 {
                     pos2 = vec3f(
@@ -269,8 +282,10 @@ export class Renderer
             fn fragmentMain(input: VertReturn)
                 -> @location(0) vec4f
             {
-                let lightDir = normalize(vec3(1.0, 1.0, 0.0));
-                let cosT: f32 = sqrt(1.0 - pow(dot(lightDir, input.dir), 2));
+                let lightPos = vec3(5.0, -10.0, 5.0);
+                let lightVec = normalize(lightPos - input.pos.xyz);
+
+                let cosT: f32 = sqrt(1.0 - pow(dot(lightVec, input.dir), 2));
 
                 let lightColor = vec3f(1.0, 1.0, 1.0);
 
