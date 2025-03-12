@@ -35,21 +35,24 @@ export class Renderer
     [
         //   X, Y, Z
         0.0, 0.0, 2.8,
-        -0.05, -0.05, 2.8,
-        -0.1, -0.1, 2.8,
-        -0.15, -0.15, 2.8,
-        -0.2, -0.2, 2.8,
-        -0.25, -0.25, 2.8,
-        -0.3, -0.3, 2.8,
-        -0.35, -0.35, 2.8,
-        -0.4, -0.4, 2.8,
-        -0.45, -0.45, 2.8,
-        -0.5, -0.5, 2.8,
-        -0.55, -0.55, 2.8,
-        -0.6, -0.6, 2.8,
-        -0.65, -0.65, 2.8,
-        -0.7, -0.7, 2.8,
-        -0.75, -0.75, 2.8,
+        0.0, -0.2, 2.8,
+        0.0, -0.4, 2.8,
+        0.0, -0.6, 2.8
+        // -0.05, -0.05, 2.8,
+        // -0.1, -0.1, 2.8,
+        // -0.15, -0.15, 2.8,
+        // -0.2, -0.2, 2.8,
+        // -0.25, -0.25, 2.8,
+        // -0.3, -0.3, 2.8,
+        // -0.35, -0.35, 2.8,
+        // -0.4, -0.4, 2.8,
+        // -0.45, -0.45, 2.8,
+        // -0.5, -0.5, 2.8,
+        // -0.55, -0.55, 2.8,
+        // -0.6, -0.6, 2.8,
+        // -0.65, -0.65, 2.8,
+        // -0.7, -0.7, 2.8,
+        // -0.75, -0.75, 2.8,
     ]);
 
     private readonly indices = new Uint16Array(
@@ -308,6 +311,9 @@ export class Renderer
                 @group(0) @binding(3) var<storage, read_write> positionsOut: array<f32>;
                 @group(0) @binding(4) var<storage, read_write> velocitiesOut: array<f32>;
 
+                @group(0) @binding(5)var<storage> prevPosIn: array<f32>;
+                @group(0) @binding(6)var<storage, read_write> prevPosOut: array<f32>;
+
                 struct SceneData
                 {
                     resolution: vec2f,
@@ -317,7 +323,7 @@ export class Renderer
 
                 const mass = 0.1f;
                 const gravity : f32 = -9.8f;
-                const deltaTime : f32 = 1.0f/60.0f;
+                const deltaTime : f32 = 1.0f/600.0f;
 
                 const damping = 0.0f;
                 const k = 40.0f;
@@ -382,15 +388,28 @@ export class Renderer
                         let acceleration: vec3<f32> = force / mass;
                         // let acceleration = vec3f(0.0f, 0.0f, 0.0f);
 
+                        var prevDist: vec3<f32>;
+                        prevDist.x = positionsIn[idx] - prevPosIn[idx];
+                        prevDist.y = positionsIn[idx + 1] - prevPosIn[idx + 1];
+                        prevDist.z = positionsIn[idx + 2] - prevPosIn[idx + 2];
+
+                        prevPosOut[idx] = positionsIn[idx];
+                        prevPosOut[idx + 1] = positionsIn[idx + 1];
+                        prevPosOut[idx + 2] = positionsIn[idx + 2];
+
+                        positionsOut[idx] = 2.0 * positionsIn[idx] - prevPosIn[idx] + acceleration.x * deltaTime * deltaTime;
+                        positionsOut[idx + 1] = 2.0 * positionsIn[idx + 1] - prevPosIn[idx + 1] + acceleration.y * deltaTime * deltaTime;
+                        positionsOut[idx + 2] = 2.0 * positionsIn[idx + 2] - prevPosIn[idx + 2] + acceleration.z * deltaTime * deltaTime;
+
                         // TODO: Do we even need to store velocities?
                         // Maybe for some force/damping?
-                        velocitiesOut[idx] = acceleration.x * deltaTime;
-                        velocitiesOut[idx + 1] = acceleration.y * deltaTime;
-                        velocitiesOut[idx + 2] = acceleration.z * deltaTime;
+                        // velocitiesOut[idx] = acceleration.x * deltaTime;
+                        // velocitiesOut[idx + 1] = acceleration.y * deltaTime;
+                        // velocitiesOut[idx + 2] = acceleration.z * deltaTime;
 
-                        positionsOut[idx] = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
-                        positionsOut[idx + 1] = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
-                        positionsOut[idx + 2] = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;
+                        // positionsOut[idx] = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
+                        // positionsOut[idx + 1] = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
+                        // positionsOut[idx + 2] = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;                        
                     }
                 }
             `
@@ -468,6 +487,19 @@ export class Renderer
                 size: velocitiesArray.byteLength,
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             }),
+
+            this.device.createBuffer(
+            {
+                label: "prevPos",
+                size: velocitiesArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+            this.device.createBuffer(
+            {
+                label: "prevPosCopy",
+                size: velocitiesArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
         ];
 
         this.device.queue.writeBuffer(this.hairStateStorage[1], 0, velocitiesArray);
@@ -489,6 +521,10 @@ export class Renderer
 
         this.device.queue.writeBuffer(this.hairStateStorage[0], 0, positionsArray);
         this.device.queue.writeBuffer(this.hairStateStorage[2], 0, positionsArray);
+
+        
+        this.device.queue.writeBuffer(this.hairStateStorage[4], 0, positionsArray);
+        this.device.queue.writeBuffer(this.hairStateStorage[5], 0, positionsArray);
     }
 
     private createPipeline()
@@ -619,6 +655,16 @@ export class Renderer
                 binding: 4,
                 visibility: GPUShaderStage.COMPUTE,
                 buffer: { type: "storage"} // Hair velocities buffer
+            },
+            {
+                binding: 5,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "read-only-storage"} // Hair prevPosIn buffer
+            },
+            {
+                binding: 6,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair prevPosOut buffer
             }]
         });
 
@@ -648,6 +694,16 @@ export class Renderer
                     {
                         binding: 4,
                         resource: { buffer: this.hairStateStorage[3] }
+                    },
+
+
+                    {
+                        binding: 5,
+                        resource: { buffer: this.hairStateStorage[4] }
+                    },
+                    {
+                        binding: 6,
+                        resource: { buffer: this.hairStateStorage[5] }
                     }
                 ]
             }),
@@ -675,6 +731,16 @@ export class Renderer
                     {
                         binding: 4,
                         resource: { buffer: this.hairStateStorage[1] }
+                    },
+
+
+                    {
+                        binding: 5,
+                        resource: { buffer: this.hairStateStorage[5] }
+                    },
+                    {
+                        binding: 6,
+                        resource: { buffer: this.hairStateStorage[4] }
                     }
                 ]
             })
