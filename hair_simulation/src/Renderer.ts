@@ -35,24 +35,24 @@ export class Renderer
     [
         //   X, Y, Z
         0.0, 0.0, 2.8,
-        0.0, -0.2, 2.8,
-        0.0, -0.4, 2.8,
-        0.0, -0.6, 2.8
-        // -0.05, -0.05, 2.8,
-        // -0.1, -0.1, 2.8,
-        // -0.15, -0.15, 2.8,
-        // -0.2, -0.2, 2.8,
-        // -0.25, -0.25, 2.8,
-        // -0.3, -0.3, 2.8,
-        // -0.35, -0.35, 2.8,
-        // -0.4, -0.4, 2.8,
-        // -0.45, -0.45, 2.8,
-        // -0.5, -0.5, 2.8,
-        // -0.55, -0.55, 2.8,
-        // -0.6, -0.6, 2.8,
-        // -0.65, -0.65, 2.8,
-        // -0.7, -0.7, 2.8,
-        // -0.75, -0.75, 2.8,
+        // -0.1, -0.2, 2.8,
+        // -0.2, -0.4, 2.8,
+        // -0.3, -0.6, 2.8
+        -0.05, -0.05, 2.8,
+        -0.1, -0.1, 2.8,
+        -0.15, -0.15, 2.8,
+        -0.2, -0.2, 2.8,
+        -0.25, -0.25, 2.8,
+        -0.3, -0.3, 2.8,
+        -0.35, -0.35, 2.8,
+        -0.4, -0.4, 2.8,
+        -0.45, -0.45, 2.8,
+        -0.5, -0.5, 2.8,
+        -0.55, -0.55, 2.8,
+        -0.6, -0.6, 2.8,
+        -0.65, -0.65, 2.8,
+        -0.7, -0.7, 2.8,
+        -0.75, -0.75, 2.8,
     ]);
 
     private readonly indices = new Uint16Array(
@@ -237,9 +237,9 @@ export class Renderer
                 // meters
                 cam.filmPlaneDimensions = vec2f(25.0f, 25.0f);
 
-                cam.location = vec3f(0.8f, 0.6f, 0.0f);
+                cam.location = vec3f(0.8f, 0.6f, -9.0f);
 
-                let lookAt: vec3f = vec3f(0.0f, 0.0f, 2.8f);
+                let lookAt: vec3f = vec3f(0.0f, -1.2f, 2.8f);
 
                 var view: mat4x4<f32> = viewTransformMatrix(
                     cam.location,
@@ -323,10 +323,10 @@ export class Renderer
 
                 const mass = 0.1f;
                 const gravity : f32 = -9.8f;
-                const deltaTime : f32 = 1.0f/600.0f;
+                const deltaTime : f32 = 1.0f/60.0f;
 
-                const damping = 0.0f;
-                const k = 40.0f;
+                const damping = 0.2f;
+                const k = 100.0f;
                 const rest_length = 0.2f; // TODO: Don't hardcode
 
                 // TODO: Why is the force reducing over time even when particles are in the same position?
@@ -346,7 +346,7 @@ export class Renderer
                     // Spring force towards previous strand
                     var force : vec3<f32> = dir1 * (length1 - rest_length) * k;
 
-                    force += vi * damping;
+                    force += (-damping * vi);
 
                     force.y += mass * gravity;
 
@@ -357,18 +357,36 @@ export class Renderer
                                                     );
 
                         let length2: f32 = length(curr_pos - next_pos);
-                        let dir2 : vec3<f32> = normalize(curr_pos - next_pos);
+                        let dir2 : vec3<f32> = normalize(next_pos - curr_pos);
                         
                         // Spring force towards next strand
                         force += dir2 * (length2 - rest_length) * k;
-
-                        let v_last : vec3<f32> = vec3(velocitiesIn[idx + 3], velocitiesIn[idx + 4],
-                                                    velocitiesIn[idx + 5]
-                                                );
-                        
-                        force += -v_last * damping;
                     }
                     
+                    return force;
+                }
+
+                fn calcForces2(idx: u32) -> vec3<f32>
+                {
+                    let curr_pos : vec3<f32> = vec3(positionsIn[idx], positionsIn[idx + 1],
+                        positionsIn[idx + 2]);
+
+                    let prev_pos : vec3<f32> = vec3(positionsIn[idx  - 3], positionsIn[idx - 2],
+                       positionsIn[idx - 1]);
+
+                    let vi : vec3<f32> = vec3(velocitiesIn[idx], velocitiesIn[idx + 1],
+                        velocitiesIn[idx + 2]);
+
+                    let length1 : f32 = length(curr_pos - prev_pos);
+                    let dir1 : vec3<f32> = normalize(prev_pos - curr_pos);
+                    
+                    // Spring force towards previous strand
+                    var force : vec3<f32> = dir1 * (length1 - rest_length) * k;
+
+                    force.y += mass * gravity;
+
+                    force += (-damping * vi);
+
                     return force;
                 }
 
@@ -385,31 +403,32 @@ export class Renderer
                     if ( vert_idx > 2.0f && idx % 3 == 0 )
                     {
                         let force: vec3<f32> = calculateForces(idx, vert_idx >= numStrandVertices - 3.0f);
+                        // let force: vec3<f32> = calcForces2(idx);
                         let acceleration: vec3<f32> = force / mass;
                         // let acceleration = vec3f(0.0f, 0.0f, 0.0f);
 
-                        var prevDist: vec3<f32>;
-                        prevDist.x = positionsIn[idx] - prevPosIn[idx];
-                        prevDist.y = positionsIn[idx + 1] - prevPosIn[idx + 1];
-                        prevDist.z = positionsIn[idx + 2] - prevPosIn[idx + 2];
+                        // var prevDist: vec3<f32>;
+                        // prevDist.x = positionsIn[idx] - prevPosIn[idx];
+                        // prevDist.y = positionsIn[idx + 1] - prevPosIn[idx + 1];
+                        // prevDist.z = positionsIn[idx + 2] - prevPosIn[idx + 2];
 
-                        prevPosOut[idx] = positionsIn[idx];
-                        prevPosOut[idx + 1] = positionsIn[idx + 1];
-                        prevPosOut[idx + 2] = positionsIn[idx + 2];
+                        // prevPosOut[idx] = positionsIn[idx];
+                        // prevPosOut[idx + 1] = positionsIn[idx + 1];
+                        // prevPosOut[idx + 2] = positionsIn[idx + 2];
 
-                        positionsOut[idx] = 2.0 * positionsIn[idx] - prevPosIn[idx] + acceleration.x * deltaTime * deltaTime;
-                        positionsOut[idx + 1] = 2.0 * positionsIn[idx + 1] - prevPosIn[idx + 1] + acceleration.y * deltaTime * deltaTime;
-                        positionsOut[idx + 2] = 2.0 * positionsIn[idx + 2] - prevPosIn[idx + 2] + acceleration.z * deltaTime * deltaTime;
+                        // positionsOut[idx] = 2.0 * positionsIn[idx] - prevPosIn[idx] + acceleration.x * deltaTime * deltaTime;
+                        // positionsOut[idx + 1] = 2.0 * positionsIn[idx + 1] - prevPosIn[idx + 1] + acceleration.y * deltaTime * deltaTime;
+                        // positionsOut[idx + 2] = 2.0 * positionsIn[idx + 2] - prevPosIn[idx + 2] + acceleration.z * deltaTime * deltaTime;
 
                         // TODO: Do we even need to store velocities?
                         // Maybe for some force/damping?
-                        // velocitiesOut[idx] = acceleration.x * deltaTime;
-                        // velocitiesOut[idx + 1] = acceleration.y * deltaTime;
-                        // velocitiesOut[idx + 2] = acceleration.z * deltaTime;
+                        velocitiesOut[idx] = velocitiesIn[idx] + acceleration.x * deltaTime;
+                        velocitiesOut[idx + 1] = velocitiesIn[idx + 1] + acceleration.y * deltaTime;
+                        velocitiesOut[idx + 2] = velocitiesIn[idx + 2] + acceleration.z * deltaTime;
 
-                        // positionsOut[idx] = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
-                        // positionsOut[idx + 1] = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
-                        // positionsOut[idx + 2] = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;                        
+                        positionsOut[idx] = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
+                        positionsOut[idx + 1] = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
+                        positionsOut[idx + 2] = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;
                     }
                 }
             `
@@ -620,6 +639,7 @@ export class Renderer
             primitive: {
                 topology: 'line-strip',
                 stripIndexFormat: 'uint16'
+                // topology: 'point-list'
             }
         });
     }
