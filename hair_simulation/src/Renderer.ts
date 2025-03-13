@@ -27,32 +27,42 @@ export class Renderer
 
     private step: boolean = false;
 
-    private readonly numHairStrands = 100.0;
+    private readonly numHairStrands = 50.0 * 50.0;
     
     // TODO: Is the vertex buffer redundant?
     // Vertex and index data
+    // TODO: Do this programmatically
+    // TODO: Figure out better params/experiment with these numbers
     private readonly strandVertices = new Float32Array(
     [
         //   X, Y, Z
         0.0, 0.0, 2.8,
-        // -0.1, -0.2, 2.8,
-        // -0.2, -0.4, 2.8,
-        // -0.3, -0.6, 2.8
-        -0.05, -0.05, 2.8,
-        -0.1, -0.1, 2.8,
-        -0.15, -0.15, 2.8,
-        -0.2, -0.2, 2.8,
-        -0.25, -0.25, 2.8,
-        -0.3, -0.3, 2.8,
-        -0.35, -0.35, 2.8,
-        -0.4, -0.4, 2.8,
-        -0.45, -0.45, 2.8,
-        -0.5, -0.5, 2.8,
-        -0.55, -0.55, 2.8,
-        -0.6, -0.6, 2.8,
-        -0.65, -0.65, 2.8,
-        -0.7, -0.7, 2.8,
-        -0.75, -0.75, 2.8,
+        0.0, -0.1, 2.8,
+        0.0, -0.2, 2.8,
+        0.0, -0.3, 2.8,
+        0.0, -0.4, 2.8,
+        0.0, -0.5, 2.8,
+        0.0, -0.6, 2.8,
+        0.0, -0.7, 2.8,
+        // 0.0, -0.08, 2.8,
+        // 0.0, -0.09, 2.8,
+        // 0.0, -0.1, 2.8,
+        // 0.0, -0.11, 2.8,
+        // -0.05, -0.05, 2.8,
+        // -0.1, -0.1, 2.8,
+        // -0.15, -0.15, 2.8,
+        // -0.2, -0.2, 2.8,
+        // -0.25, -0.25, 2.8,
+        // -0.3, -0.3, 2.8,
+        // -0.35, -0.35, 2.8,
+        // -0.4, -0.4, 2.8,
+        // -0.45, -0.45, 2.8,
+        // -0.5, -0.5, 2.8,
+        // -0.55, -0.55, 2.8,
+        // -0.6, -0.6, 2.8,
+        // -0.65, -0.65, 2.8,
+        // -0.7, -0.7, 2.8,
+        // -0.75, -0.75, 2.8,
     ]);
 
     private readonly indices = new Uint16Array(
@@ -237,9 +247,9 @@ export class Renderer
                 // meters
                 cam.filmPlaneDimensions = vec2f(25.0f, 25.0f);
 
-                cam.location = vec3f(0.8f, 0.6f, -9.0f);
+                cam.location = vec3f(0.8f, 0.6f, 0.0f);
 
-                let lookAt: vec3f = vec3f(0.0f, -1.2f, 2.8f);
+                let lookAt: vec3f = vec3f(0.0f, 0.3f, 2.8f);
 
                 var view: mat4x4<f32> = viewTransformMatrix(
                     cam.location,
@@ -306,7 +316,7 @@ export class Renderer
             code: 
             /* wgsl */ `
                 @group(0) @binding(0) var<uniform> sceneData: SceneData;
-                @group(0) @binding(1) var<storage> positionsIn: array<f32>;
+                @group(0) @binding(1) var<storage> positionsIn: array<f32>; // TODO: Read as array of vec3f
                 @group(0) @binding(2) var<storage> velocitiesIn: array<f32>;
                 @group(0) @binding(3) var<storage, read_write> positionsOut: array<f32>;
                 @group(0) @binding(4) var<storage, read_write> velocitiesOut: array<f32>;
@@ -317,7 +327,9 @@ export class Renderer
                 struct SceneData
                 {
                     resolution: vec2f,
-                    numStrandVertices: f32
+                    numStrandVertices: f32,
+                    radius: f32,
+                    scalpCenter: vec3<f32>
                 };
 
 
@@ -325,9 +337,9 @@ export class Renderer
                 const gravity : f32 = -9.8f;
                 const deltaTime : f32 = 1.0f/60.0f;
 
-                const damping = 0.2f;
-                const k = 100.0f;
-                const rest_length = 0.2f; // TODO: Don't hardcode
+                const damping = 0.1f;
+                const k = 30.0f;
+                const rest_length = 0.005f; // TODO: Don't hardcode
 
                 // TODO: Why is the force reducing over time even when particles are in the same position?
                 fn calculateForces(idx: u32, last_vertex: bool) -> vec3<f32>
@@ -337,7 +349,7 @@ export class Renderer
 
                     let curr_pos : vec3<f32> = vec3(positionsIn[idx], positionsIn[idx + 1],
                                                  positionsIn[idx + 2]);
-                    let prev_pos : vec3<f32> = vec3(positionsIn[idx  - 3], positionsIn[idx - 2],
+                    let prev_pos : vec3<f32> = vec3(positionsIn[idx - 3], positionsIn[idx - 2],
                                                 positionsIn[idx - 1]);
 
                     let length1 : f32 = length(curr_pos - prev_pos);
@@ -366,30 +378,6 @@ export class Renderer
                     return force;
                 }
 
-                fn calcForces2(idx: u32) -> vec3<f32>
-                {
-                    let curr_pos : vec3<f32> = vec3(positionsIn[idx], positionsIn[idx + 1],
-                        positionsIn[idx + 2]);
-
-                    let prev_pos : vec3<f32> = vec3(positionsIn[idx  - 3], positionsIn[idx - 2],
-                       positionsIn[idx - 1]);
-
-                    let vi : vec3<f32> = vec3(velocitiesIn[idx], velocitiesIn[idx + 1],
-                        velocitiesIn[idx + 2]);
-
-                    let length1 : f32 = length(curr_pos - prev_pos);
-                    let dir1 : vec3<f32> = normalize(prev_pos - curr_pos);
-                    
-                    // Spring force towards previous strand
-                    var force : vec3<f32> = dir1 * (length1 - rest_length) * k;
-
-                    force.y += mass * gravity;
-
-                    force += (-damping * vi);
-
-                    return force;
-                }
-
                 @compute
                 @workgroup_size(8) // TODO: Don't hard code workgroup size
                 fn computeMain(@builtin(global_invocation_id) id: vec3<u32>)
@@ -400,25 +388,12 @@ export class Renderer
 
                     let vert_idx = f32(idx % u32(numStrandVertices));
 
-                    if ( vert_idx > 2.0f && idx % 3 == 0 )
+                    if ( vert_idx > 2.0 && idx % 3 == 0 )
                     {
                         let force: vec3<f32> = calculateForces(idx, vert_idx >= numStrandVertices - 3.0f);
-                        // let force: vec3<f32> = calcForces2(idx);
                         let acceleration: vec3<f32> = force / mass;
-                        // let acceleration = vec3f(0.0f, 0.0f, 0.0f);
 
-                        // var prevDist: vec3<f32>;
-                        // prevDist.x = positionsIn[idx] - prevPosIn[idx];
-                        // prevDist.y = positionsIn[idx + 1] - prevPosIn[idx + 1];
-                        // prevDist.z = positionsIn[idx + 2] - prevPosIn[idx + 2];
-
-                        // prevPosOut[idx] = positionsIn[idx];
-                        // prevPosOut[idx + 1] = positionsIn[idx + 1];
-                        // prevPosOut[idx + 2] = positionsIn[idx + 2];
-
-                        // positionsOut[idx] = 2.0 * positionsIn[idx] - prevPosIn[idx] + acceleration.x * deltaTime * deltaTime;
-                        // positionsOut[idx + 1] = 2.0 * positionsIn[idx + 1] - prevPosIn[idx + 1] + acceleration.y * deltaTime * deltaTime;
-                        // positionsOut[idx + 2] = 2.0 * positionsIn[idx + 2] - prevPosIn[idx + 2] + acceleration.z * deltaTime * deltaTime;
+                        // let acceleration = vec3f(0.0);
 
                         // TODO: Do we even need to store velocities?
                         // Maybe for some force/damping?
@@ -426,9 +401,24 @@ export class Renderer
                         velocitiesOut[idx + 1] = velocitiesIn[idx + 1] + acceleration.y * deltaTime;
                         velocitiesOut[idx + 2] = velocitiesIn[idx + 2] + acceleration.z * deltaTime;
 
-                        positionsOut[idx] = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
-                        positionsOut[idx + 1] = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
-                        positionsOut[idx + 2] = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;
+                        var finalPos: vec3<f32>;
+                        finalPos.x = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
+                        finalPos.y = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
+                        finalPos.z = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;
+
+                        // Constrain position on head surface
+                        let distFromCenter: f32 = length(finalPos - sceneData.scalpCenter);
+                        if (distFromCenter < sceneData.radius)
+                        {
+                            finalPos += (sceneData.radius - distFromCenter) * normalize(finalPos - sceneData.scalpCenter);
+                            velocitiesOut[idx] = 0.0;
+                            velocitiesOut[idx + 1] = 0.0;
+                            velocitiesOut[idx + 2] = 0.0;
+                        }
+
+                        positionsOut[idx] = finalPos.x;
+                        positionsOut[idx + 1] = finalPos.y;
+                        positionsOut[idx + 2] = finalPos.z;
                     }
                 }
             `
@@ -453,13 +443,23 @@ export class Renderer
             usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST
         });
 
+        const radius = 0.5;
+        const scalpCenterX = 0.0;
+        const scalpCenterY = 0.5;
+        const scalpCenterZ = 2.8;
+
         // Uniform buffer
-        this.uniforms = new Float32Array(3);
+        this.uniforms = new Float32Array(7); // TODO: Don't hardcode length
 
         // Resolution
         this.uniforms[0] = this.canvas.width;
         this.uniforms[1] = this.canvas.height;
         this.uniforms[2] = this.strandVertices.length;
+        this.uniforms[3] = radius;
+        this.uniforms[4] = scalpCenterX;
+        this.uniforms[5] = scalpCenterY;
+        this.uniforms[6] = scalpCenterZ;
+
         
         this.uniformBuffer = this.device.createBuffer(
         {
@@ -473,9 +473,6 @@ export class Renderer
         this.device.queue.writeBuffer(this.indexBuffer, 0, this.indices);
         this.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniforms);
 
-        const radius = 0.5;
-        const scalpCenterX = 0.0;
-        const scalpCenterY = 0.5;
 
         // Storage Buffers
         const positionsArray = new Float32Array(this.numHairStrands * this.strandVertices.length);
@@ -524,17 +521,45 @@ export class Renderer
         this.device.queue.writeBuffer(this.hairStateStorage[1], 0, velocitiesArray);
         this.device.queue.writeBuffer(this.hairStateStorage[3], 0, velocitiesArray);
         
-        // fill positions
-        for (let ii = 0; ii < this.numHairStrands; ii++)
-        {
-            for (let jj = 0; jj < this.strandVertices.length; jj += 3)
-            {
-                let theta = ii * Math.PI/(this.numHairStrands - 1.0);
-                let base_idx = ii * this.strandVertices.length + jj;
+        let numPointsPerDimension = Math.sqrt(this.numHairStrands);
 
-                positionsArray[base_idx] = radius * Math.cos(theta) + scalpCenterX + this.strandVertices[jj];
-                positionsArray[base_idx + 1] = -1.0 * radius * Math.sin(theta) + scalpCenterY + this.strandVertices[jj + 1];
-                positionsArray[base_idx + 2] = this.strandVertices[jj + 2];
+        // temp functions
+        function magnitude(p1x: number, p1y: number, p1z: number) : number
+        {
+            return Math.sqrt(p1x * p1x + p1y * p1y + p1z * p1z);
+        }
+
+        // fill positions
+        for (let ii = 0; ii < numPointsPerDimension; ii++)
+        {
+            let outerTheta = ii * Math.PI/(numPointsPerDimension - 1.0);
+            let innerRadius = radius * Math.sin(outerTheta);
+            let sphereCenterX = scalpCenterX + radius * Math.cos(outerTheta);
+
+            for (let jj = 0; jj < numPointsPerDimension; jj++)
+            {
+                let theta = jj * Math.PI/(numPointsPerDimension - 1.0);
+
+                for (let kk = 0; kk < this.strandVertices.length; kk += 3)
+                {
+                    let base_idx = (ii * numPointsPerDimension + jj) * this.strandVertices.length + kk;
+                    
+                    positionsArray[base_idx] = sphereCenterX;
+                    positionsArray[base_idx + 1] = scalpCenterY + innerRadius * Math.sin(theta) + this.strandVertices[kk + 1];
+                    positionsArray[base_idx + 2] = scalpCenterZ + innerRadius * Math.cos(theta);
+
+                    let distFromCenter = magnitude(positionsArray[base_idx] - scalpCenterX,
+                        positionsArray[base_idx + 1] - scalpCenterY,
+                        positionsArray[base_idx + 2] - scalpCenterZ,
+                    );
+
+                    if (distFromCenter < radius)
+                    {
+                        positionsArray[base_idx] += (radius - distFromCenter) * (positionsArray[base_idx] - scalpCenterX)/distFromCenter;
+                        positionsArray[base_idx + 1] += (radius - distFromCenter) * (positionsArray[base_idx + 1] - scalpCenterY)/distFromCenter;
+                        positionsArray[base_idx + 2] += (radius - distFromCenter) * (positionsArray[base_idx + 2] - scalpCenterZ)/distFromCenter;
+                    }
+                }
             }
         }
 
