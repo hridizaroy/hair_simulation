@@ -25,14 +25,21 @@ export class Renderer
     private compute_bindGroup!: GPUBindGroup[];
     private compute_pipeline!: GPUComputePipeline;
 
+    private bins_shaderModule!: GPUShaderModule;
+    private bins_bindGroupLayout!: GPUBindGroupLayout;
+    private bins_bindGroup!: GPUBindGroup[];
+    private bins_pipeline!: GPUComputePipeline;
+
     private step: boolean = false;
 
-    private readonly numHairStrands = 50.0 * 50.0;
+    private readonly numHairStrands = 100.0 * 100.0;
+    private numBins = 0;
     
     // TODO: Is the vertex buffer redundant?
     // Vertex and index data
     // TODO: Do this programmatically
     // TODO: Figure out better params/experiment with these numbers
+    // TODO: Maybe the sphere repositioning logic is not working
     private readonly strandVertices = new Float32Array(
     [
         //   X, Y, Z
@@ -83,9 +90,13 @@ export class Renderer
         // Pipeline
         this.loadShaders();
         this.loadComputeShader();
+        this.loadBinsShader();
+
         this.createBuffers();
+
         this.createPipeline();
         this.compute_createPipeline();
+        this.bins_createPipeline();
 
         // Render
         this.createRenderPassDescriptor();
@@ -302,7 +313,9 @@ export class Renderer
 
                 let lightColor = vec3f(1.0, 1.0, 1.0);
 
-                return vec4f(lightColor * cosT, 1.0f);
+                let hairColor = vec3f(0.4, 0.1, 0.04);
+
+                return vec4f(lightColor * hairColor * cosT, 1.0f);
             }
             `
         });
@@ -321,29 +334,32 @@ export class Renderer
                 @group(0) @binding(3) var<storage, read_write> positionsOut: array<f32>;
                 @group(0) @binding(4) var<storage, read_write> velocitiesOut: array<f32>;
 
-                @group(0) @binding(5)var<storage> prevPosIn: array<f32>;
-                @group(0) @binding(6)var<storage, read_write> prevPosOut: array<f32>;
+                @group(0) @binding(5) var<storage> prevPosIn: array<f32>;
+                @group(0) @binding(6) var<storage, read_write> prevPosOut: array<f32>;
+
+                @group(0) @binding(7) var<storage, read_write> bins: array<array<atomic<u32>, 4>>; // TODO: Don't hardcode
 
                 struct SceneData
                 {
                     resolution: vec2f,
                     numStrandVertices: f32,
                     radius: f32,
-                    scalpCenter: vec3<f32>
+                    scalpCenter: vec3<f32>,
+                    rest_length: f32
                 };
 
 
-                const mass = 0.1f;
+                const mass = 0.05f;
                 const gravity : f32 = -9.8f;
                 const deltaTime : f32 = 1.0f/60.0f;
 
                 const damping = 0.1f;
-                const k = 30.0f;
-                const rest_length = 0.005f; // TODO: Don't hardcode
+                const k = 50.0f;
 
                 // TODO: Why is the force reducing over time even when particles are in the same position?
                 fn calculateForces(idx: u32, last_vertex: bool) -> vec3<f32>
                 {
+                    let rest_length = sceneData.rest_length;
                     let vi : vec3<f32> = vec3(velocitiesIn[idx], velocitiesIn[idx + 1],
                                             velocitiesIn[idx + 2]);
 
@@ -374,6 +390,10 @@ export class Renderer
                         // Spring force towards next strand
                         force += dir2 * (length2 - rest_length) * k;
                     }
+
+                    // Add wind force
+                    force.x += 2.0;
+                    force.y += -0.4;
                     
                     return force;
                 }
@@ -393,33 +413,96 @@ export class Renderer
                         let force: vec3<f32> = calculateForces(idx, vert_idx >= numStrandVertices - 3.0f);
                         let acceleration: vec3<f32> = force / mass;
 
-                        // let acceleration = vec3f(0.0);
-
                         // TODO: Do we even need to store velocities?
                         // Maybe for some force/damping?
-                        velocitiesOut[idx] = velocitiesIn[idx] + acceleration.x * deltaTime;
-                        velocitiesOut[idx + 1] = velocitiesIn[idx + 1] + acceleration.y * deltaTime;
-                        velocitiesOut[idx + 2] = velocitiesIn[idx + 2] + acceleration.z * deltaTime;
+                        // velocitiesOut[idx] = velocitiesIn[idx] + acceleration.x * deltaTime;
+                        // velocitiesOut[idx + 1] = velocitiesIn[idx + 1] + acceleration.y * deltaTime;
+                        // velocitiesOut[idx + 2] = velocitiesIn[idx + 2] + acceleration.z * deltaTime;
 
                         var finalPos: vec3<f32>;
-                        finalPos.x = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
-                        finalPos.y = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
-                        finalPos.z = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;
+                        // finalPos.x = positionsIn[idx] + velocitiesOut[idx] * deltaTime;
+                        // finalPos.y = positionsIn[idx + 1] + velocitiesOut[idx + 1] * deltaTime;
+                        // finalPos.z = positionsIn[idx + 2] + velocitiesOut[idx + 2] * deltaTime;
+
+                        finalPos.x = 2.0 * positionsIn[idx] - prevPosIn[idx] + acceleration.x * deltaTime * deltaTime;
+                        finalPos.y = 2.0 * positionsIn[idx + 1] - prevPosIn[idx + 1] + acceleration.y * deltaTime * deltaTime;
+                        finalPos.z = 2.0 * positionsIn[idx + 2] - prevPosIn[idx + 2] + acceleration.z * deltaTime * deltaTime;
+
+                        prevPosOut[idx] = positionsIn[idx];
+                        prevPosOut[idx + 1] = positionsIn[idx + 1];
+                        prevPosOut[idx + 2] = positionsIn[idx + 2];
 
                         // Constrain position on head surface
                         let distFromCenter: f32 = length(finalPos - sceneData.scalpCenter);
                         if (distFromCenter < sceneData.radius)
                         {
                             finalPos += (sceneData.radius - distFromCenter) * normalize(finalPos - sceneData.scalpCenter);
-                            velocitiesOut[idx] = 0.0;
-                            velocitiesOut[idx + 1] = 0.0;
-                            velocitiesOut[idx + 2] = 0.0;
+                            // velocitiesOut[idx] = 0.0;
+                            // velocitiesOut[idx + 1] = 0.0;
+                            // velocitiesOut[idx + 2] = 0.0;
                         }
 
                         positionsOut[idx] = finalPos.x;
                         positionsOut[idx + 1] = finalPos.y;
                         positionsOut[idx + 2] = finalPos.z;
+
+                        velocitiesOut[idx] = (finalPos.x - prevPosIn[idx])/deltaTime;
+                        velocitiesOut[idx + 1] = (finalPos.y - prevPosIn[idx + 1])/deltaTime;
+                        velocitiesOut[idx + 2] = (finalPos.z - prevPosIn[idx + 2])/deltaTime;
+
+                        // Calculate Grid Index
+                        // StartPos = ScalpCenter - floor(BoundingBoxSide / 2)
+                        // Pos - StartPos (3D Vectors)
+                        // Divide by binSideLength
+                        // Take floor
+                        // Index = Pos.z * (binSideLength ^ 2) + Pos.y * (binSideLength) + Pos.x
+
+                        // atomicAdd(&bins[Idx][0], 1);
+
+                        // TODO for intersections
+                        // Define grid side length and start and end points
+                        // Define max number of strands within grid
+                        // Get grid index from position mid point
+                        // Get index for grid buffer
+                        // Store idx in grid buffer
+                        // Run another compute shader for checking intersections 
+                            // Make sure to 0 out counters (idx 0) at the end of calculations for each bin
                     }
+                }
+            `
+        });
+    }
+
+    private loadBinsShader()
+    {
+        this.bins_shaderModule = this.device.createShaderModule(
+        {
+            label: "Bins shader",
+            code: 
+            /* wgsl */ `
+                @group(0) @binding(0) var<uniform> sceneData: SceneData;
+                @group(0) @binding(1) var<storage, read_write> positionsOut: array<f32>;
+                @group(0) @binding(2) var<storage, read_write> velocitiesOut: array<f32>;
+                @group(0) @binding(3) var<storage, read_write> prevPosOut: array<f32>;
+
+                @group(0) @binding(4) var<storage, read_write> bins: array<array<atomic<u32>, 4>>;  // TODO: Don't hardcode
+
+                struct SceneData
+                {
+                    resolution: vec2f,
+                    numStrandVertices: f32,
+                    radius: f32,
+                    scalpCenter: vec3<f32>,
+                    rest_length: f32
+                };
+
+                const deltaTime : f32 = 1.0f/60.0f;
+
+                @compute
+                @workgroup_size(64) // TODO: Don't hard code workgroup size
+                fn computeMain(@builtin(global_invocation_id) id: vec3<u32>)
+                {
+                    atomicStore(&bins[id.x][0], 2);
                 }
             `
         });
@@ -447,9 +530,10 @@ export class Renderer
         const scalpCenterX = 0.0;
         const scalpCenterY = 0.5;
         const scalpCenterZ = 2.8;
+        const rest_length = 0.01;
 
         // Uniform buffer
-        this.uniforms = new Float32Array(7); // TODO: Don't hardcode length
+        this.uniforms = new Float32Array(8); // TODO: Don't hardcode length
 
         // Resolution
         this.uniforms[0] = this.canvas.width;
@@ -459,6 +543,7 @@ export class Renderer
         this.uniforms[4] = scalpCenterX;
         this.uniforms[5] = scalpCenterY;
         this.uniforms[6] = scalpCenterZ;
+        this.uniforms[7] = rest_length;
 
         
         this.uniformBuffer = this.device.createBuffer(
@@ -477,6 +562,19 @@ export class Renderer
         // Storage Buffers
         const positionsArray = new Float32Array(this.numHairStrands * this.strandVertices.length);
         const velocitiesArray = new Float32Array(this.numHairStrands * this.strandVertices.length);
+        
+        
+        // Grid buffer
+        // TODO: Place these variables better
+        // Idx 0 holds number of Strands
+        // The rest of the places hold index of the hair strand in this bin
+        var binSideLength = radius / 20.0; // TODO: temp
+        var boundingBoxSide = 8.0 * radius; // TODO: This is temp
+        boundingBoxSide = Math.ceil(boundingBoxSide / binSideLength) * binSideLength;
+        const maxStrands = 4;
+        this.numBins = Math.pow(boundingBoxSide, 3) / Math.pow(binSideLength, 3);
+        const totalInts = (maxStrands + 1) * this.numBins;
+        const binsArray = new Int32Array(totalInts);
 
         this.hairStateStorage = [
             this.device.createBuffer(
@@ -516,10 +614,18 @@ export class Renderer
                 size: velocitiesArray.byteLength,
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             }),
+            this.device.createBuffer(
+            {
+                label: "bins",
+                size: binsArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            })
         ];
 
         this.device.queue.writeBuffer(this.hairStateStorage[1], 0, velocitiesArray);
         this.device.queue.writeBuffer(this.hairStateStorage[3], 0, velocitiesArray);
+
+        this.device.queue.writeBuffer(this.hairStateStorage[6], 0, binsArray);
         
         let numPointsPerDimension = Math.sqrt(this.numHairStrands);
 
@@ -710,6 +816,11 @@ export class Renderer
                 binding: 6,
                 visibility: GPUShaderStage.COMPUTE,
                 buffer: { type: "storage"} // Hair prevPosOut buffer
+            },
+            {
+                binding: 7,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair binsOut buffer
             }]
         });
 
@@ -749,6 +860,11 @@ export class Renderer
                     {
                         binding: 6,
                         resource: { buffer: this.hairStateStorage[5] }
+                    },
+                    
+                    {
+                        binding: 7,
+                        resource: { buffer: this.hairStateStorage[6] }
                     }
                 ]
             }),
@@ -786,6 +902,11 @@ export class Renderer
                     {
                         binding: 6,
                         resource: { buffer: this.hairStateStorage[4] }
+                    },
+
+                    {
+                        binding: 7,
+                        resource: { buffer: this.hairStateStorage[6] }
                     }
                 ]
             })
@@ -809,6 +930,117 @@ export class Renderer
         });
     }
 
+    private bins_createPipeline()
+    {
+        // Create the bind group layout and pipeline layout.
+        this.bins_bindGroupLayout = this.device.createBindGroupLayout(
+        {
+            label: "Bins Bind Group Layout",
+            entries: 
+            [{
+                binding: 0,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: {} // Hair uniform buffer
+            },
+            {
+                binding: 1,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair positions buffer
+            },
+            {
+                binding: 2,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair velocities buffer
+            },
+            {
+                binding: 3,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair prevPos buffer
+            },
+            {
+                binding: 4,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: "storage"} // Hair bins buffer
+            },
+            ]
+        });
+
+
+        this.bins_bindGroup = [
+            this.device.createBindGroup(
+            {
+                label: "Bins bind group A",
+                layout: this.bins_bindGroupLayout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: this.uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: this.hairStateStorage[0] }
+                    },
+                    {
+                        binding: 2,
+                        resource: { buffer: this.hairStateStorage[2] }
+                    },
+                    {
+                        binding: 3,
+                        resource: { buffer: this.hairStateStorage[4] }
+                    },                    
+                    {
+                        binding: 4,
+                        resource: { buffer: this.hairStateStorage[6] }
+                    }
+                ]
+            }),
+            this.device.createBindGroup(
+            {
+                label: "Bins bind group B",
+                layout: this.bins_bindGroupLayout,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: { buffer: this.uniformBuffer }
+                    },
+                    {
+                        binding: 1,
+                        resource: { buffer: this.hairStateStorage[1] }
+                    },
+                    {
+                        binding: 2,
+                        resource: { buffer: this.hairStateStorage[3] }
+                    },
+                    {
+                        binding: 3,
+                        resource: { buffer: this.hairStateStorage[5] }
+                    },
+                    {
+                        binding: 4,
+                        resource: { buffer: this.hairStateStorage[6] }
+                    },
+                ]
+            })
+        ];
+
+        const bins_pipelineLayout = this.device.createPipelineLayout(
+        {
+            label: "Hair Pipeline Layout Bins",
+            bindGroupLayouts: [ this.bins_bindGroupLayout ]
+        });
+
+        this.bins_pipeline = this.device.createComputePipeline(
+        {
+            label: "Bins Simulation pipeline",
+            layout: bins_pipelineLayout,
+            compute:
+            {
+                module: this.bins_shaderModule,
+                entryPoint: "computeMain",
+            }
+        });
+    }
+
     // Rendering
     private createRenderPassDescriptor()
     {
@@ -818,7 +1050,7 @@ export class Renderer
             colorAttachments:
             [{
                 view: this.context.getCurrentTexture().createView(),
-                clearValue: [0.2, 0.2, 0.2, 1],
+                clearValue: [1.0, 1.0, 1.0, 1.0],
                 loadOp: "clear",
                 storeOp: "store",
             }]
@@ -846,6 +1078,18 @@ export class Renderer
         computePass.dispatchWorkgroups(workgroupCount);
 
         computePass.end();
+
+        // intersections pass
+        const binsPass = encoder.beginComputePass();
+
+        binsPass.setPipeline(this.bins_pipeline);
+        binsPass.setBindGroup(0, this.bins_bindGroup[bindGroupIdx]);
+
+        // TODO: workgroup size hardcoded for now
+        const workgroupCount_bins = Math.ceil(this.numBins / 64);
+        binsPass.dispatchWorkgroups(workgroupCount_bins);
+
+        binsPass.end();
 
         // renderpass
         const pass = encoder.beginRenderPass(this.renderPassDescriptor);
