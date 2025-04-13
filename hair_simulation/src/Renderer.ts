@@ -337,7 +337,7 @@ export class Renderer
                 @group(0) @binding(5) var<storage> prevPosIn: array<f32>;
                 @group(0) @binding(6) var<storage, read_write> prevPosOut: array<f32>;
 
-                @group(0) @binding(7) var<storage, read_write> bins: array<array<atomic<u32>, 4>>; // TODO: Don't hardcode
+                @group(0) @binding(7) var<storage, read_write> bins: array<array<atomic<u32>, 5>>; // TODO: Don't hardcode
 
                 struct SceneData
                 {
@@ -345,13 +345,17 @@ export class Renderer
                     numStrandVertices: f32,
                     radius: f32,
                     scalpCenter: vec3<f32>,
-                    rest_length: f32
+                    rest_length: f32,
+                    boundingBoxSide: u32,
+                    maxStrands: u32,
+                    binSideLength: f32,
+                    numBinsPerDim: u32
                 };
 
 
                 const mass = 0.05f;
                 const gravity : f32 = -9.8f;
-                const deltaTime : f32 = 1.0f/60.0f;
+                const deltaTime : f32 = 1.0f/600.0f;
 
                 const damping = 0.1f;
                 const k = 50.0f;
@@ -392,7 +396,7 @@ export class Renderer
                     }
 
                     // Add wind force
-                    force.x += 2.0;
+                    force.x += 1.0;
                     force.y += -0.4;
                     
                     return force;
@@ -437,9 +441,9 @@ export class Renderer
                         if (distFromCenter < sceneData.radius)
                         {
                             finalPos += (sceneData.radius - distFromCenter) * normalize(finalPos - sceneData.scalpCenter);
-                            // velocitiesOut[idx] = 0.0;
-                            // velocitiesOut[idx + 1] = 0.0;
-                            // velocitiesOut[idx + 2] = 0.0;
+                            velocitiesOut[idx] = 0.0;
+                            velocitiesOut[idx + 1] = 0.0;
+                            velocitiesOut[idx + 2] = 0.0;
                         }
 
                         positionsOut[idx] = finalPos.x;
@@ -456,8 +460,18 @@ export class Renderer
                         // Divide by binSideLength
                         // Take floor
                         // Index = Pos.z * (binSideLength ^ 2) + Pos.y * (binSideLength) + Pos.x
+                        var startPos: vec3f = sceneData.scalpCenter - floor(f32(sceneData.boundingBoxSide) / 2.0);
+                        var cornerIdx3D: vec3u = vec3u(floor((finalPos - startPos)/sceneData.binSideLength));
+                        var gridIdx: u32 = cornerIdx3D.z * sceneData.numBinsPerDim * sceneData.numBinsPerDim
+                                            + cornerIdx3D.y * sceneData.numBinsPerDim + cornerIdx3D.x;
 
-                        // atomicAdd(&bins[Idx][0], 1);
+                        var currStrands: u32 = atomicLoad(&bins[gridIdx][0]);
+
+                        if (currStrands < sceneData.maxStrands)
+                        {
+                            atomicAdd(&bins[gridIdx][0], 1);
+                            atomicStore(&bins[gridIdx][currStrands + 1], idx);
+                        }
 
                         // TODO for intersections
                         // Define grid side length and start and end points
@@ -496,7 +510,7 @@ export class Renderer
                     rest_length: f32
                 };
 
-                const deltaTime : f32 = 1.0f/60.0f;
+                const deltaTime : f32 = 1.0f/600.0f;
 
                 @compute
                 @workgroup_size(64) // TODO: Don't hard code workgroup size
@@ -532,8 +546,20 @@ export class Renderer
         const scalpCenterZ = 2.8;
         const rest_length = 0.01;
 
+        // Grid buffer
+        // TODO: Place these variables better
+        // Idx 0 holds number of Strands
+        // The rest of the places hold index of the hair strand in this bin
+        var binSideLength = radius / 20.0; // TODO: temp
+        var boundingBoxSide = 8.0 * radius; // TODO: This is temp
+        boundingBoxSide = Math.ceil(boundingBoxSide / binSideLength) * binSideLength;
+        const maxStrands = 4;
+        this.numBins = Math.pow(boundingBoxSide / binSideLength, 3);
+        const totalInts = (maxStrands + 1) * this.numBins;
+        const binsArray = new Int32Array(totalInts);
+
         // Uniform buffer
-        this.uniforms = new Float32Array(8); // TODO: Don't hardcode length
+        this.uniforms = new Float32Array(12); // TODO: Don't hardcode length
 
         // Resolution
         this.uniforms[0] = this.canvas.width;
@@ -544,6 +570,10 @@ export class Renderer
         this.uniforms[5] = scalpCenterY;
         this.uniforms[6] = scalpCenterZ;
         this.uniforms[7] = rest_length;
+        this.uniforms[8] = boundingBoxSide;
+        this.uniforms[9] = maxStrands;
+        this.uniforms[10] = binSideLength;
+        this.uniforms[11] = boundingBoxSide/binSideLength;
 
         
         this.uniformBuffer = this.device.createBuffer(
@@ -562,19 +592,6 @@ export class Renderer
         // Storage Buffers
         const positionsArray = new Float32Array(this.numHairStrands * this.strandVertices.length);
         const velocitiesArray = new Float32Array(this.numHairStrands * this.strandVertices.length);
-        
-        
-        // Grid buffer
-        // TODO: Place these variables better
-        // Idx 0 holds number of Strands
-        // The rest of the places hold index of the hair strand in this bin
-        var binSideLength = radius / 20.0; // TODO: temp
-        var boundingBoxSide = 8.0 * radius; // TODO: This is temp
-        boundingBoxSide = Math.ceil(boundingBoxSide / binSideLength) * binSideLength;
-        const maxStrands = 4;
-        this.numBins = Math.pow(boundingBoxSide, 3) / Math.pow(binSideLength, 3);
-        const totalInts = (maxStrands + 1) * this.numBins;
-        const binsArray = new Int32Array(totalInts);
 
         this.hairStateStorage = [
             this.device.createBuffer(
@@ -978,15 +995,15 @@ export class Renderer
                     },
                     {
                         binding: 1,
-                        resource: { buffer: this.hairStateStorage[0] }
+                        resource: { buffer: this.hairStateStorage[1] }
                     },
                     {
                         binding: 2,
-                        resource: { buffer: this.hairStateStorage[2] }
+                        resource: { buffer: this.hairStateStorage[3] }
                     },
                     {
                         binding: 3,
-                        resource: { buffer: this.hairStateStorage[4] }
+                        resource: { buffer: this.hairStateStorage[5] }
                     },                    
                     {
                         binding: 4,
@@ -1005,15 +1022,15 @@ export class Renderer
                     },
                     {
                         binding: 1,
-                        resource: { buffer: this.hairStateStorage[1] }
+                        resource: { buffer: this.hairStateStorage[0] }
                     },
                     {
                         binding: 2,
-                        resource: { buffer: this.hairStateStorage[3] }
+                        resource: { buffer: this.hairStateStorage[2] }
                     },
                     {
                         binding: 3,
-                        resource: { buffer: this.hairStateStorage[5] }
+                        resource: { buffer: this.hairStateStorage[4] }
                     },
                     {
                         binding: 4,
