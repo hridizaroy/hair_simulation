@@ -32,7 +32,7 @@ export class Renderer
 
     private step: boolean = false;
 
-    private readonly numHairStrands = 100.0 * 100.0;
+    private readonly numHairStrands = 2.0 * 2.0;
     private numBins = 0;
     
     // TODO: Is the vertex buffer redundant?
@@ -346,10 +346,10 @@ export class Renderer
                     radius: f32,
                     scalpCenter: vec3<f32>,
                     rest_length: f32,
-                    boundingBoxSide: u32,
-                    maxStrands: u32,
+                    boundingBoxSide: f32,
+                    maxStrands: f32,
                     binSideLength: f32,
-                    numBinsPerDim: u32
+                    numBinsPerDim: f32
                 };
 
 
@@ -395,8 +395,17 @@ export class Renderer
                         force += dir2 * (length2 - rest_length) * k;
                     }
 
+                    // TODO: Temp
+                    let strandNum: u32 = idx / u32(sceneData.numStrandVertices);
+                    if (strandNum < 2)
+                    {
+                        force.x -= 2.0;
+                        force.y += -0.4;
+                        return force;
+                    }
+
                     // Add wind force
-                    force.x += 1.0;
+                    force.x += 2.0;
                     force.y += -0.4;
                     
                     return force;
@@ -460,17 +469,21 @@ export class Renderer
                         // Divide by binSideLength
                         // Take floor
                         // Index = Pos.z * (binSideLength ^ 2) + Pos.y * (binSideLength) + Pos.x
-                        var startPos: vec3f = sceneData.scalpCenter - floor(f32(sceneData.boundingBoxSide) / 2.0);
+                        var maxStrands = u32(sceneData.maxStrands);
+                        var numBinsPerDim = u32(sceneData.numBinsPerDim);
+
+                        var startPos: vec3f = sceneData.scalpCenter - floor(sceneData.boundingBoxSide / 2.0);
                         var cornerIdx3D: vec3u = vec3u(floor((finalPos - startPos)/sceneData.binSideLength));
-                        var gridIdx: u32 = cornerIdx3D.z * sceneData.numBinsPerDim * sceneData.numBinsPerDim
-                                            + cornerIdx3D.y * sceneData.numBinsPerDim + cornerIdx3D.x;
+                        var gridIdx: u32 = cornerIdx3D.y * numBinsPerDim * numBinsPerDim
+                                            + cornerIdx3D.z * numBinsPerDim + cornerIdx3D.x;
 
-                        var currStrands: u32 = atomicLoad(&bins[gridIdx][0]);
-
-                        if (currStrands < sceneData.maxStrands)
+                        
+                        // var currStrands = atomicLoad(&bins[gridIdx][0]);
+                        
+                        if (atomicLoad(&bins[gridIdx][0]) < maxStrands)
                         {
                             atomicAdd(&bins[gridIdx][0], 1);
-                            atomicStore(&bins[gridIdx][currStrands + 1], idx);
+                            atomicStore(&bins[gridIdx][min(atomicLoad(&bins[gridIdx][0]), maxStrands)], idx);
                         }
 
                         // TODO for intersections
@@ -512,11 +525,93 @@ export class Renderer
 
                 const deltaTime : f32 = 1.0f/600.0f;
 
+                fn areIntersecting(p1: vec3f, p2: vec3f, q1: vec3f, q2: vec3f) -> bool
+                {
+                    let u = p2 - p1;
+                    let v = q2 - q1;
+                    let w = p1 - q1;
+
+                    var a = dot(u, u);
+                    var b = dot(u, v);
+                    var c = dot(v, v);
+                    var d = dot(u, w);
+                    var e = dot(v, w);
+
+                    var denominator = a * c - b * b;
+
+                    if (denominator < 1e-6)
+                    {
+                        return false;
+                    }
+
+                    var s = (b * e - c * d) / denominator;
+                    var t = (a * e - b * d) / denominator;
+
+                    if (s < 0.0 || s > 1.0 || t < 0.0 || t > 1.0)
+                    {
+                        return false;
+                    }
+
+                    var p = p1 + s * u;
+                    var q = q1 + t * v;
+
+                    return length(p - q) < 1e-6;
+                }
+
                 @compute
                 @workgroup_size(64) // TODO: Don't hard code workgroup size
                 fn computeMain(@builtin(global_invocation_id) id: vec3<u32>)
                 {
-                    atomicStore(&bins[id.x][0], 2);
+                    let idx = id.x;
+                    
+                    var currStrands: u32 = atomicLoad(&bins[idx][0]);
+
+                    if (currStrands > 1)
+                    {
+                        var strandIdx1 = atomicLoad(&bins[idx][1]);
+                        var strandIdx2 = atomicLoad(&bins[idx][2]);
+
+                        let numStrandVertices = u32(sceneData.numStrandVertices);
+
+                        let strandNum1: u32 = strandIdx1 / numStrandVertices;
+                        let strandNum2: u32 = strandIdx2 / numStrandVertices;
+
+                        let vertIdx1 = strandIdx1 % numStrandVertices;
+                        let vertIdx2 = strandIdx2 % numStrandVertices;
+
+                        if (vertIdx1 > 2 && vertIdx2 > 2 && strandNum1 != strandNum2)
+                        {
+                            var p1 = vec3f(positionsOut[strandIdx1],
+                                                positionsOut[strandIdx1 + 1],
+                                                positionsOut[strandIdx1 + 2]
+                                            );
+
+                            var p2 = vec3f(positionsOut[strandIdx1 - 3],
+                                                positionsOut[strandIdx1 - 2],
+                                                positionsOut[strandIdx1 - 1]
+                                            );
+
+                            var q1 = vec3f(positionsOut[strandIdx2],
+                                                positionsOut[strandIdx2 + 1],
+                                                positionsOut[strandIdx2 + 2]
+                                            );
+
+                            var q2 = vec3f(positionsOut[strandIdx2 - 3],
+                                                positionsOut[strandIdx2 - 2],
+                                                positionsOut[strandIdx2 - 1]
+                                            );
+
+                            
+                            if areIntersecting(p1, p2, q1, q2)
+                            {
+                                positionsOut[strandIdx1 + 1] += 0.1;
+                                positionsOut[strandIdx2 + 2] += 0.1;
+                            }
+                        }
+                    }
+
+                    // Reset current num strands to 0
+                    atomicStore(&bins[idx][0], 0);
                 }
             `
         });
@@ -550,8 +645,8 @@ export class Renderer
         // TODO: Place these variables better
         // Idx 0 holds number of Strands
         // The rest of the places hold index of the hair strand in this bin
-        var binSideLength = radius / 20.0; // TODO: temp
-        var boundingBoxSide = 8.0 * radius; // TODO: This is temp
+        var binSideLength = radius / 5.0; // TODO: temp
+        var boundingBoxSide = 4.0 * radius; // TODO: This is temp
         boundingBoxSide = Math.ceil(boundingBoxSide / binSideLength) * binSideLength;
         const maxStrands = 4;
         this.numBins = Math.pow(boundingBoxSide / binSideLength, 3);
