@@ -30,7 +30,7 @@ export class Renderer
 
     private step: boolean = false;
 
-    private readonly numHairStrands = 10.0 * 10.0;
+    private readonly numHairStrands = 100.0 * 100.0;
     private numBins = 0;
     
     // TODO: Is the vertex buffer redundant?

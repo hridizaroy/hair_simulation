@@ -30,7 +30,7 @@ export class Renderer
 
     private step: boolean = false;
 
-    private readonly numHairStrands = 10.0 * 10.0;
+    private readonly numHairStrands = 2.0 * 2.0;
     private numBins = 0;
     
     // TODO: Is the vertex buffer redundant?
@@ -45,10 +45,10 @@ export class Renderer
         0.0, -0.1, 2.8,
         0.0, -0.2, 2.8,
         0.0, -0.3, 2.8,
-        0.0, -0.4, 2.8,
-        0.0, -0.5, 2.8,
-        0.0, -0.6, 2.8,
-        0.0, -0.7, 2.8,
+        // 0.0, -0.4, 2.8,
+        // 0.0, -0.5, 2.8,
+        // 0.0, -0.6, 2.8,
+        // 0.0, -0.7, 2.8,
         // 0.0, -0.08, 2.8,
         // 0.0, -0.09, 2.8,
         // 0.0, -0.1, 2.8,
@@ -355,7 +355,7 @@ export class Renderer
                 const gravity : f32 = -9.8f;
                 const deltaTime : f32 = 1.0f/600.0f;
 
-                const damping = 0.05f;
+                const damping = 0.1f;
                 const k = 50.0f;
 
                 // TODO: Why is the force reducing over time even when particles are in the same position?
@@ -396,6 +396,11 @@ export class Renderer
                     // Add wind force
                     force.x += 2.0;
                     force.y += -0.4;
+
+                    if (idx / u32(sceneData.numStrandVertices) == 0)
+                    {
+                        force.x -= 5.0;
+                    }
                     
                     return force;
                 }
@@ -591,7 +596,10 @@ export class Renderer
                                                 positionsOut[strandIdx2 - 1]
                                             );
 
-
+                            
+                            
+                            // velocitiesOut[strandIdx1 + 1] = 0.0;                            
+                            // velocitiesOut[strandIdx2 + 1] = 0.0;
                             if areIntersecting(p1, p2, q1, q2)
                             {
                                 // TODO: Replace with forces
@@ -652,7 +660,7 @@ export class Renderer
         const scalpCenterX = 0.0;
         const scalpCenterY = 0.5;
         const scalpCenterZ = 2.8;
-        const rest_length = 0.02;
+        const rest_length = 0.2;
 
         // Grid buffer
         // TODO: Place these variables better
